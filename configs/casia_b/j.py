@@ -1,6 +1,6 @@
 modality = 'j'
 graph = 'coco'
-num_classes = 124
+num_classes = 74 
 work_dir = f'./work_dirs/casia_b/j'
 
 model = dict(
@@ -37,7 +37,7 @@ test_pipeline = [
     dict(type='GenSkeFeat', dataset=graph, feats=[modality]),
     dict(type='UniformSampleDecode', clip_len=100, num_clips=10),
     dict(type='FormatGCNInput', num_person=1),
-    dict(type='Collect', keys=['keypoint', 'label'], meta_keys=[]),
+    dict(type='Collect', keys=['keypoint', 'label'], meta_keys=['idx', 'subject', 'condition', 'view', 'sequence', 'frame_dir']),
     dict(type='ToTensor', keys=['keypoint'])
 ]
 data = dict(
