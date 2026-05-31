@@ -1,33 +1,33 @@
 """Activation visualization for ProtoGCN.
 
-This module adapts the idea from GaitGraph2's ``draw_activation.py`` to the
-ProtoGCN pipeline:
-
-- use the backbone feature map before pooling
-- project features with the classifier weights
-- render the activation on top of the skeleton sequence
-
-The implementation is intentionally model-agnostic enough to work with the
-current ``RecognizerGCN`` + ``ProtoGCN`` stack, while still supporting the
-GaitGraph-style backbone/classifier separation.
+This module runs a test-time forward pass, projects the feature map onto the
+classifier weights, and renders the resulting activation over the skeleton
+sequence.
 """
 
 from __future__ import annotations
 
 import glob
 import os
+import logging
 from dataclasses import dataclass
-from typing import Optional, Sequence, Tuple
+from typing import Optional, Tuple
+
+import matplotlib
+
+matplotlib.use("Agg")
 
 import imageio.v2 as imageio
-import matplotlib
+import matplotlib.cm as cmx
+import matplotlib.colors as colors
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
-import matplotlib.pyplot as plt
-import matplotlib.cm as cmx
-import matplotlib.colors as colors
-matplotlib.use("Agg")
+from tqdm import tqdm
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -65,7 +65,6 @@ def _build_connect_joint(graph) -> np.ndarray:
             parent[child] = parent_joint
         return parent
 
-    # Fallback: derive a tree from the neighbor structure if necessary.
     if hasattr(graph, "neighbor"):
         for child, parent_joint in graph.neighbor:
             if child != parent_joint:
@@ -80,25 +79,12 @@ def _layout_from_graph(graph) -> SkeletonLayout:
     connect_joint = _build_connect_joint(graph)
     extra_bones = ()
 
-    # Keep a few anatomy-friendly cross links that help readability.
     if getattr(graph, "layout", "") == "coco":
         extra_bones = ((11, 12),)
-    elif getattr(graph, "layout", "") in {"openpose", "openpose_new"}:
-        extra_bones = ((8, 11),)
-    elif getattr(graph, "layout", "") == "oumvlp":
+    elif getattr(graph, "layout", "") in {"openpose", "openpose_new", "oumvlp"}:
         extra_bones = ((8, 11),)
 
     return SkeletonLayout(connect_joint=connect_joint, extra_bones=extra_bones)
-
-
-def _sequence_name(meta=None, gt_label=None, pred_label=None, sample_name="sequence"):
-    meta = meta or {}
-    subject = meta.get("subject", meta.get("subject_id", sample_name))
-    condition = meta.get("condition", meta.get("cond", "na"))
-    angle = meta.get("angle", meta.get("view", meta.get("seq_num", "na")))
-    gt_text = "na" if gt_label is None else str(int(gt_label))
-    pred_text = "na" if pred_label is None else str(int(pred_label))
-    return f"{subject}-{condition}-{angle}-gt{gt_text}-pred{pred_text}"
 
 
 def _unwrap_meta(meta):
@@ -113,6 +99,14 @@ def _unwrap_meta(meta):
     return meta
 
 
+def _sequence_name(meta=None, sample_name="sequence"):
+    meta = meta or {}
+    subject = meta.get("subject", meta.get("subject_id", sample_name))
+    condition = meta.get("condition", meta.get("cond", "na"))
+    angle = meta.get("angle", meta.get("view", meta.get("seq_num", "na")))
+    return f"{subject}-{condition}-{angle}"
+
+
 def _normalize_activation(result: np.ndarray) -> np.ndarray:
     result = np.maximum(result, 0)
     max_value = float(np.max(result))
@@ -124,32 +118,26 @@ def _normalize_activation(result: np.ndarray) -> np.ndarray:
 def _select_class_map(
     activation: torch.Tensor,
     cls_score: Optional[torch.Tensor] = None,
-    label: Optional[int] = None,
     class_mode: str = "pred",
-) -> Tuple[np.ndarray, Optional[int]]:
+) -> np.ndarray:
     """Select one class map from ``(num_classes, T, V)`` activation maps."""
     if activation.dim() != 3:
         raise ValueError(f"Expected activation with shape (K, T, V), got {tuple(activation.shape)}")
 
-    chosen_class = None
     if class_mode == "max":
         class_map = activation.max(dim=0).values
-    else:
-        if class_mode == "label":
-            if label is None:
-                raise ValueError("class_mode='label' requires label.")
-            chosen_class = int(label)
-        elif class_mode == "pred":
-            if cls_score is None:
-                raise ValueError("class_mode='pred' requires cls_score.")
-            chosen_class = int(torch.argmax(cls_score).item())
-        else:
-            raise ValueError("class_mode must be one of: 'pred', 'label', 'max'.")
+        return class_map.detach().cpu().numpy()
 
-        chosen_class = max(0, min(chosen_class, activation.size(0) - 1))
-        class_map = activation[chosen_class]
+    if class_mode != "pred":
+        raise ValueError("class_mode must be one of: 'pred', 'max'.")
 
-    return class_map.detach().cpu().numpy(), chosen_class
+    if cls_score is None:
+        raise ValueError("class_mode='pred' requires cls_score.")
+
+    chosen_class = int(torch.argmax(cls_score).item())
+    chosen_class = max(0, min(chosen_class, activation.size(0) - 1))
+    class_map = activation[chosen_class]
+    return class_map.detach().cpu().numpy()
 
 
 def _upsample_activation(class_map: np.ndarray, target_t: int) -> np.ndarray:
@@ -165,7 +153,6 @@ def _upsample_activation(class_map: np.ndarray, target_t: int) -> np.ndarray:
 def _get_point_tensor(keypoint: torch.Tensor) -> torch.Tensor:
     """Convert input keypoints to ``(C, T, V)`` for a single person clip."""
     if keypoint.dim() == 6:
-        # (N, num_clips, M, T, V, C)
         keypoint = keypoint[:, 0]
     if keypoint.dim() != 5:
         raise ValueError(f"Expected keypoint with shape (N, M, T, V, C), got {tuple(keypoint.shape)}")
@@ -176,7 +163,6 @@ def _get_point_tensor(keypoint: torch.Tensor) -> torch.Tensor:
     if points.dim() != 4:
         raise ValueError(f"Expected per-sample keypoints with shape (M, T, V, C), got {tuple(points.shape)}")
 
-    # Average across persons if multiple detections are present.
     points = points.float().mean(dim=0)  # (T, V, C)
     points = points.permute(2, 0, 1).contiguous()  # (C, T, V)
     return points
@@ -190,14 +176,31 @@ def _split_channels(points: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, O
     raise ValueError(f"Unsupported point channels: {points.size(0)}")
 
 
+def _prepare_clip_feature(clip_feat: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Convert backbone output into head input and activation input."""
+    if isinstance(clip_feat, (tuple, list)):
+        clip_feat = clip_feat[0]
+
+    if clip_feat.dim() == 5:
+        feat_for_head = clip_feat
+        feat_for_act = clip_feat[:, 0] if clip_feat.size(1) == 1 else clip_feat.mean(dim=1)
+        feat_for_act = feat_for_act.squeeze(0)
+        return feat_for_head, feat_for_act
+
+    if clip_feat.dim() == 4:
+        feat_for_head = clip_feat.unsqueeze(1)
+        feat_for_act = clip_feat.squeeze(0)
+        return feat_for_head, feat_for_act
+
+    raise ValueError(f"Unexpected feature shape from backbone: {tuple(clip_feat.shape)}")
+
+
 def draw_skeleton(
     result: np.ndarray,
     points: np.ndarray,
-    label: Sequence[int] | int,
     graph,
     output_dir: str,
     sample_name: str,
-    pause: float = 0.01,
     render_gif: bool = True,
     min_conf: float = 0.025,
     dpi: int = 96,
@@ -223,29 +226,21 @@ def draw_skeleton(
     os.makedirs(pdf_dir, exist_ok=True)
     os.makedirs(gif_dir, exist_ok=True)
 
-    plt.figure(figsize=(1000 / dpi, 1000 / dpi), dpi=dpi)
-    plt.colorbar(scalar_map, shrink=0.25, aspect=5)
-    plt.ion()
-
-    if isinstance(label, tuple) and len(label) == 2:
-        label_text = f"gt: {label[0]}, pred: {label[1]}"
-    elif isinstance(label, int):
-        label_text = f"label: {label}"
-    else:
-        label_text = f"label: {tuple(int(x) for x in label)}"
+    fig, ax = plt.subplots(figsize=(1000 / dpi, 1000 / dpi), dpi=dpi)
+    fig.colorbar(scalar_map, ax=ax, shrink=0.25, aspect=5)
 
     for t in range(T):
-        plt.cla()
-        plt.xlim(-450, 450)
-        plt.ylim(-450, 450)
-        plt.axis("off")
-        plt.title(f"{label_text}, frame: {t}")
+        ax.clear()
+        ax.set_xlim(-450, 450)
+        ax.set_ylim(-450, 450)
+        ax.axis("off")
+        ax.set_title(f"frame: {t}")
 
         x = point_x[t, :] - mean_pos[0]
         y = mean_pos[1] - point_y[t, :]
         conf = point_conf[t, :]
 
-        c = []
+        node_colors = []
         activation = []
         for v in range(V):
             k = int(layout.connect_joint[v])
@@ -253,24 +248,25 @@ def draw_skeleton(
             activation.append(r)
 
             if conf[k] < min_conf or conf[v] < min_conf:
-                c.append([0, 0, 0, 0])
+                node_colors.append([0, 0, 0, 0])
                 continue
 
-            c.append(scalar_map.to_rgba(r))
-            plt.plot([x[v], x[k]], [y[v], y[k]], "-", c=np.array([0.1, 0.1, 0.1]), alpha=0.5, linewidth=3, markersize=0)
+            node_colors.append(scalar_map.to_rgba(r))
+            ax.plot([x[v], x[k]], [y[v], y[k]], "-", c=np.array([0.15, 0.15, 0.15]), alpha=0.8, linewidth=5, zorder=1)
 
         for a, b in layout.extra_bones:
-            plt.plot([x[a], x[b]], [y[a], y[b]], "-", c=np.array([0.1, 0.1, 0.1]), alpha=0.5, linewidth=3, markersize=0)
+            ax.plot([x[a], x[b]], [y[a], y[b]], "-", c=np.array([0.15, 0.15, 0.15]), alpha=0.8, linewidth=5, zorder=1)
 
-        c = np.asarray(c, dtype=np.float32)
-        s = np.asarray(activation, dtype=np.float32) * 128.0
-        plt.scatter(x, y, marker="o", c=c, s=s, zorder=2.5)
+        node_colors = np.asarray(node_colors, dtype=np.float32)
+        node_sizes = np.asarray(activation, dtype=np.float32) * 900.0 + 80.0
 
-        plt.savefig(os.path.join(pdf_dir, f"{sample_name}-{t:03}.pdf"))
-        plt.savefig(os.path.join(png_dir, f"{sample_name}-{t:03}.png"))
+        ax.scatter(x, y, marker="o", c=node_colors, s=node_sizes, zorder=3)
 
-    plt.ioff()
-    plt.close()
+        fig.tight_layout()
+        fig.savefig(os.path.join(pdf_dir, f"{sample_name}-{t:03}.pdf"), bbox_inches="tight", pad_inches=0.1)
+        fig.savefig(os.path.join(png_dir, f"{sample_name}-{t:03}.png"), bbox_inches="tight", pad_inches=0.1)
+
+    plt.close(fig)
 
     if render_gif:
         images = []
@@ -291,23 +287,16 @@ def visualize_activation_batch(
     min_conf: float = 0.025,
     dpi: int = 96,
 ):
-    """Visualize a sequence of ProtoGCN/RecognizerGCN inputs."""
+    """Visualize activation maps for one batch from the test loader."""
     if isinstance(batch, dict):
         keypoint = batch["keypoint"]
-        label = batch.get("label")
         if meta is None and "img_metas" in batch:
             meta = _unwrap_meta(batch["img_metas"])
     else:
-        keypoint, label = batch[:2]
+        keypoint = batch[0]
 
     if not torch.is_tensor(keypoint):
         keypoint = torch.as_tensor(keypoint)
-    if torch.is_tensor(label):
-        label_values = [int(x) for x in label.flatten().tolist()]
-    elif label is None:
-        label_values = [None] * keypoint.shape[0]
-    else:
-        label_values = [int(x) for x in np.asarray(label).flatten().tolist()]
 
     device = next(model.parameters()).device
     keypoint = keypoint.to(device)
@@ -316,29 +305,44 @@ def visualize_activation_batch(
         raise ValueError(f"Expected keypoint with shape (N, num_clips, M, T, V, C), got {tuple(keypoint.shape)}")
 
     with torch.no_grad():
-        weight = _get_classifier_weight(model)
+        weight = _get_classifier_weight(model).to(device)
         graph = _get_graph(model)
-        results = []
+
         for i in range(keypoint.size(0)):
-            label_value = label_values[i] if i < len(label_values) else label_values[0]
             seq = keypoint[i]
+            # Visualize only one clip to avoid concatenating all test-time crops.
+            seq = seq[:1]
             clips, persons, frames, _, _ = seq.shape
             seq_full = seq.permute(1, 0, 2, 3, 4).reshape(persons, clips * frames, seq.size(3), seq.size(4)).cpu()
+
+            if isinstance(meta, (list, tuple)):
+                seq_meta = meta[i] if i < len(meta) else meta[0]
+            else:
+                seq_meta = meta if meta is not None else {}
+            seq_dir = _sequence_name(seq_meta, sample_name)
+
+            logger.info(
+                "Rendering sample %s: extracting features (%d clips, %d persons, %d frames/clip)",
+                seq_dir,
+                clips,
+                persons,
+                frames,
+            )
 
             clip_feats = []
             for clip in seq:
                 backbone_out = model.extract_feat(clip.unsqueeze(0))
                 clip_feat = backbone_out[0] if isinstance(backbone_out, (tuple, list)) else backbone_out
-                if clip_feat.dim() == 5:
-                    clip_feat = clip_feat[:, 0] if clip_feat.size(1) == 1 else clip_feat.mean(dim=1)
-                clip_feats.append(clip_feat.squeeze(0))
+                clip_feat_for_head, clip_feat_for_act = _prepare_clip_feature(clip_feat)
+                clip_feats.append((clip_feat_for_head, clip_feat_for_act))
 
+            logger.info("Rendering sample %s: projecting activation map", seq_dir)
             clip_scores = []
             clip_acts = []
-            for clip_feat in clip_feats:
-                clip_score = model.cls_head(clip_feat.unsqueeze(0))
+            for clip_feat_for_head, clip_feat_for_act in clip_feats:
+                clip_score = model.cls_head(clip_feat_for_head)
                 clip_scores.append(clip_score.squeeze(0))
-                clip_acts.append(torch.einsum("kc,ctv->ktv", weight, clip_feat))
+                clip_acts.append(torch.einsum("kc,ctv->ktv", weight, clip_feat_for_act))
 
             cls_score = torch.stack(clip_scores, dim=0)
             if hasattr(model, "average_clip"):
@@ -347,25 +351,14 @@ def visualize_activation_batch(
                 seq_score = cls_score.mean(dim=0)
 
             activation = torch.cat(clip_acts, dim=1)
-            pred_label = int(torch.argmax(seq_score).item())
-            class_map, chosen_class = _select_class_map(
-                activation,
-                cls_score=seq_score,
-                label=label_value,
-                class_mode=class_mode,
-            )
-
+            class_map = _select_class_map(activation, cls_score=seq_score, class_mode=class_mode)
             class_map = _upsample_activation(class_map, seq_full.shape[1])
-            if isinstance(meta, (list, tuple)):
-                seq_meta = meta[i] if i < len(meta) else meta[0]
-            else:
-                seq_meta = meta if meta is not None else {}
-            seq_dir = _sequence_name(seq_meta, label_value, pred_label, sample_name)
+
+            logger.info("Rendering sample %s: drawing activation overlay", seq_dir)
             sample_points = _get_point_tensor(seq_full.unsqueeze(0))
             draw_skeleton(
                 class_map,
                 sample_points.numpy(),
-                (label_value if label_value is not None else -1, pred_label),
                 graph,
                 output_dir=output_dir,
                 sample_name=seq_dir,
@@ -373,9 +366,6 @@ def visualize_activation_batch(
                 min_conf=min_conf,
                 dpi=dpi,
             )
-            results.append({"label": label_value, "pred": pred_label, "chosen_class": chosen_class})
-
-    return results if len(results) > 1 else results[0]
 
 
 def visualize_test_loader(
@@ -387,23 +377,33 @@ def visualize_test_loader(
     min_conf: float = 0.025,
     dpi: int = 96,
 ):
+    """Run inference on the test loader and save activation maps."""
     model.eval()
-    results = []
+    total_batches = len(data_loader) if hasattr(data_loader, "__len__") else None
+    logger.info(
+        "Start visualize on test loader%s",
+        f" ({total_batches} batches)" if total_batches is not None else "",
+    )
     with torch.no_grad():
-        for batch_idx, batch in enumerate(data_loader):
+        for batch_idx, batch in tqdm(
+            enumerate(data_loader),
+            total=total_batches,
+            desc="visualize",
+            dynamic_ncols=True,
+            leave=False,
+        ):
+            tqdm.write(f"visualize: batch {batch_idx + 1}" if total_batches is None else f"visualize: batch {batch_idx + 1}/{total_batches}")
             meta = batch.get("img_metas") if isinstance(batch, dict) else None
             meta = _unwrap_meta(meta)
-            results.append(
-                visualize_activation_batch(
-                    model,
-                    batch,
-                    output_dir=output_dir,
-                    sample_name=f"{batch_idx:06}",
-                    meta=meta,
-                    class_mode=class_mode,
-                    render_gif=render_gif,
-                    min_conf=min_conf,
-                    dpi=dpi,
-                )
+            visualize_activation_batch(
+                model,
+                batch,
+                output_dir=output_dir,
+                sample_name=f"{batch_idx:06}",
+                meta=meta,
+                class_mode=class_mode,
+                render_gif=render_gif,
+                min_conf=min_conf,
+                dpi=dpi,
             )
-    return results
+    logger.info("Visualization completed")
