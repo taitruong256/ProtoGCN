@@ -41,7 +41,7 @@ class RecognizerGCN(BaseRecognizer):
             dim_idx = dict(n=0, m=1, t=3, v=4)
 
             if pool_opt == 'all':
-                pool_opt == 'nmtv'
+                pool_opt = 'nmtv'
             if pool_opt != 'none':
                 for digit in pool_opt:
                     assert digit in dim_idx

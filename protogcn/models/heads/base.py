@@ -29,6 +29,8 @@ class BaseHead(nn.Module, metaclass=ABCMeta):
         self.label_smooth_eps = label_smooth_eps
         if joint_cfg == 'nturgb+d':     # 25*25=625
             n_channel = 625
+        elif joint_cfg == 'coco':       # 17*17=289
+            n_channel = 289
         elif joint_cfg == 'coco_new':   # 20*20=400
             n_channel = 400
         self.csc_loss = Class_Specific_Contrastive_Loss(num_classes, n_channel)

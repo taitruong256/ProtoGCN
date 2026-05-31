@@ -175,7 +175,7 @@ class RandomRot:
             theta = np.random.uniform(-self.theta, self.theta, size=3)
             rot_mat = self._rot3d(theta)
         elif C == 2:
-            theta = np.random.uniform(-self.theta)
+            theta = np.random.uniform(-self.theta, self.theta)
             rot_mat = self._rot2d(theta)
         results['keypoint'] = np.einsum('ab,mtvb->mtva', rot_mat, skeleton)
 
