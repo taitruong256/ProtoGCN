@@ -177,6 +177,7 @@ class CasiaBGaitDataset(BaseDataset):
             gallery_labels = labels[gallery_mask]
             probe_features = features[probe_mask]
             probe_labels = labels[probe_mask]
+            probe_conditions = np.array([ann.get('condition', '') for ann in self.video_infos])[probe_mask]
 
             gallery_templates = []
             gallery_template_labels = []
@@ -196,6 +197,14 @@ class CasiaBGaitDataset(BaseDataset):
             correct = pred_labels == probe_labels
             eval_results['gait_rank1'] = float(correct.mean())
             print_log(f'\ngait_rank1\t{eval_results["gait_rank1"]:.4f}', logger=logger)
+
+            for condition in ('bg', 'cl', 'nm'):
+                condition_mask = probe_conditions == condition
+                if not np.any(condition_mask):
+                    continue
+                key = f'gait_rank1_{condition}'
+                eval_results[key] = float(correct[condition_mask].mean())
+                print_log(f'\n{key}\t{eval_results[key]:.4f}', logger=logger)
 
         if 'gait_contrastive_loss' in metrics:
             msg = '\nEvaluating gait_contrastive_loss ...' if logger is None else 'Evaluating gait_contrastive_loss ...'
