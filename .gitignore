@@ -3,3 +3,5 @@ data/
 work_dirs/
 protogcn.egg-info/
 code/
+command.txt
+configs/

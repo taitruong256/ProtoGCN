@@ -103,8 +103,9 @@ def _sequence_name(meta=None, sample_name="sequence"):
     meta = meta or {}
     subject = meta.get("subject", meta.get("subject_id", sample_name))
     condition = meta.get("condition", meta.get("cond", "na"))
-    angle = meta.get("angle", meta.get("view", meta.get("seq_num", "na")))
-    return f"{subject}-{condition}-{angle}"
+    sequence = meta.get("sequence", meta.get("seq", meta.get("seq_num", "na")))
+    angle = meta.get("angle", meta.get("view", "na"))
+    return f"{subject}-{condition}-{sequence}-{angle}"
 
 
 def _normalize_activation(result: np.ndarray) -> np.ndarray:
@@ -217,6 +218,18 @@ def draw_skeleton(
     point_conf = point_conf.numpy() if point_conf is not None else np.ones_like(point_x)
 
     mean_pos = np.mean(np.mean(points[:2], -1), -1)
+    all_x = points[0] - mean_pos[0]
+    all_y = mean_pos[1] - points[1]
+    xmin = np.min(all_x)
+    xmax = np.max(all_x)
+    ymin = np.min(all_y)
+    ymax = np.max(all_y)
+    width = xmax - xmin
+    height = ymax - ymin
+    max_range = max(width, height)
+    pad = max_range * 0.25
+    cx = (xmin + xmax) / 2
+    cy = (ymin + ymax) / 2
 
     sample_dir = os.path.join(output_dir, sample_name)
     png_dir = os.path.join(sample_dir, "png")
@@ -226,15 +239,16 @@ def draw_skeleton(
     os.makedirs(pdf_dir, exist_ok=True)
     os.makedirs(gif_dir, exist_ok=True)
 
-    fig, ax = plt.subplots(figsize=(1000 / dpi, 1000 / dpi), dpi=dpi)
-    fig.colorbar(scalar_map, ax=ax, shrink=0.25, aspect=5)
+    fig, ax = plt.subplots(figsize=(8, 8), dpi=dpi)
+    fig.colorbar(scalar_map, ax=ax, fraction=0.045, pad=0.02)
 
     for t in range(T):
         ax.clear()
-        ax.set_xlim(-450, 450)
-        ax.set_ylim(-450, 450)
+        ax.set_xlim(cx - max_range / 2 - pad, cx + max_range / 2 + pad)
+        ax.set_ylim(cy - max_range / 2 - pad, cy + max_range / 2 + pad)
+        ax.set_aspect("equal")
         ax.axis("off")
-        ax.set_title(f"frame: {t}")
+        ax.set_title(f"frame: {t}", fontsize=14)
 
         x = point_x[t, :] - mean_pos[0]
         y = mean_pos[1] - point_y[t, :]
@@ -252,13 +266,29 @@ def draw_skeleton(
                 continue
 
             node_colors.append(scalar_map.to_rgba(r))
-            ax.plot([x[v], x[k]], [y[v], y[k]], "-", c=np.array([0.15, 0.15, 0.15]), alpha=0.8, linewidth=5, zorder=1)
+            ax.plot(
+                [x[v], x[k]],
+                [y[v], y[k]],
+                "-",
+                c=[0.15, 0.15, 0.15],
+                alpha=0.8,
+                linewidth=5,
+                zorder=1,
+            )
 
         for a, b in layout.extra_bones:
-            ax.plot([x[a], x[b]], [y[a], y[b]], "-", c=np.array([0.15, 0.15, 0.15]), alpha=0.8, linewidth=5, zorder=1)
+            ax.plot(
+                [x[a], x[b]],
+                [y[a], y[b]],
+                "-",
+                c=[0.15, 0.15, 0.15],
+                alpha=0.8,
+                linewidth=5,
+                zorder=1,
+            )
 
         node_colors = np.asarray(node_colors, dtype=np.float32)
-        node_sizes = np.asarray(activation, dtype=np.float32) * 900.0 + 80.0
+        node_sizes = np.asarray(activation, dtype=np.float32) * 650.0 + 60.0
 
         ax.scatter(x, y, marker="o", c=node_colors, s=node_sizes, zorder=3)
 
