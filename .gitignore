@@ -5,3 +5,5 @@ protogcn.egg-info/
 code/
 command.txt
 docs/
+graph.npy
+result.pkl

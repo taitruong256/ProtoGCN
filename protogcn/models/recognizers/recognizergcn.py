@@ -5,6 +5,26 @@ from ..builder import RECOGNIZERS
 from .base import BaseRecognizer
 
 
+def _pool_features_before_head(x):
+    """Pool backbone features to the same shape expected by the classifier."""
+    if isinstance(x, tuple) or isinstance(x, list):
+        x = torch.cat(x, dim=2)
+
+    if len(x.shape) == 2:
+        return x
+
+    if len(x.shape) != 5:
+        raise ValueError(f'Unsupported feature shape for extraction: {tuple(x.shape)}')
+
+    pool = torch.nn.AdaptiveAvgPool2d(1)
+    n, m, c, t, v = x.shape
+    x = x.reshape(n * m, c, t, v)
+    x = pool(x)
+    x = x.reshape(n, m, c)
+    x = x.mean(dim=1)
+    return x
+
+
 @RECOGNIZERS.register_module()
 class RecognizerGCN(BaseRecognizer):
     """GCN-based recognizer for skeleton-based action recognition. """
@@ -36,9 +56,13 @@ class RecognizerGCN(BaseRecognizer):
         pool_opt = self.test_cfg.get('pool_opt', 'all')
         score_ext = self.test_cfg.get('score_ext', False)
         if feat_ext or score_ext:
-            assert bs == 1
             assert isinstance(pool_opt, str)
             dim_idx = dict(n=0, m=1, t=3, v=4)
+
+            if feat_ext:
+                feat = _pool_features_before_head(x)
+                feat = feat.reshape(bs, nc, -1).mean(dim=1)
+                return feat.data.cpu().numpy().astype(np.float32)
 
             if pool_opt == 'all':
                 pool_opt = 'nmtv'
@@ -46,8 +70,6 @@ class RecognizerGCN(BaseRecognizer):
                 for digit in pool_opt:
                     assert digit in dim_idx
 
-            if isinstance(x, tuple) or isinstance(x, list):
-                x = torch.cat(x, dim=2)
             assert len(x.shape) == 5, 'The shape is N, M, C, T, V'
             if pool_opt != 'none':
                 for d in pool_opt:
@@ -59,8 +81,8 @@ class RecognizerGCN(BaseRecognizer):
                 x = torch.einsum('nmctv,oc->nmotv', x, w)
                 if b is not None:
                     x = x + b[..., None, None]
-                x = x[None]
-            return x.data.cpu().numpy().astype(np.float16)
+                x = x.reshape(bs, nc, *x.shape[1:]).mean(dim=1)
+                return x.data.cpu().numpy().astype(np.float16)
 
         cls_score = self.cls_head(x)
         cls_score = cls_score.reshape(bs, nc, cls_score.shape[-1])
