@@ -56,8 +56,19 @@ def multi_gpu_test(model: nn.Module,
     results = []
     dataset = data_loader.dataset
     rank, world_size = get_dist_info()
-    # optional: save graphs for visualization
-    # save_graph = []
+    save_graph = []
+    captured_graph = {}
+
+    def _capture_last_graph(_module, _inputs, output):
+        if isinstance(output, tuple) and len(output) >= 2 and output[1] is not None:
+            captured_graph['graph'] = output[1].detach().cpu()
+        else:
+            captured_graph['graph'] = None
+
+    module = model.module if hasattr(model, 'module') else model
+    hook_handle = None
+    if hasattr(module, 'backbone') and hasattr(module.backbone, 'gcn') and len(module.backbone.gcn) > 0:
+        hook_handle = module.backbone.gcn[-1].register_forward_hook(_capture_last_graph)
 
     if rank == 0:
         prog_bar = mmcv.ProgressBar(len(dataset))
@@ -65,9 +76,15 @@ def multi_gpu_test(model: nn.Module,
     for i, data in enumerate(data_loader):
         with torch.no_grad():
             result = model(return_loss=False, **data) 
-            # result, get_graph = model(return_loss=False, **data)
         results.extend(result)
-        # save_graph.append(get_graph)
+        graph = captured_graph.get('graph', None)
+        if graph is not None:
+            graph = graph.float()
+            if graph.dim() == 4:
+                graph = graph.mean(dim=1)
+            elif graph.dim() == 2:
+                graph = graph.unsqueeze(0)
+            save_graph.extend(graph.numpy())
         
         if rank == 0:
             batch_size = len(result)
@@ -83,8 +100,12 @@ def multi_gpu_test(model: nn.Module,
     else:
         result_from_ranks = collect_results_cpu(results, len(dataset), tmpdir)
 
-    # graph_data = np.array(save_graph)
-    # np.save('graph.npy', graph_data)
+    if hook_handle is not None:
+        hook_handle.remove()
+
+    if rank == 0 and len(save_graph) > 0:
+        graph_data = np.stack(save_graph, axis=0)
+        np.save('graph.npy', graph_data)
     
     return result_from_ranks
 
