@@ -211,24 +211,91 @@ if label is not None:
 else:
     print('\n[2-Stream] J+B - Label file missing, skipping evaluation')
 
+# 2-stream: J + K
+if label is not None:
+    print('\n[2-Stream] J+K')
+    fused = comb([joint, kbone], [1, 1])
+    metrics = report_stream('J+K', fused)
+    results['2-stream-jk'] = metrics
+else:
+    print('\n[2-Stream] J+K - Label file missing, skipping evaluation')
+
+# 2-stream: B + K 
+if label is not None:
+    print('\n[2-Stream] B+K')
+    fused = comb([bone, kbone], [1, 1])
+    metrics = report_stream('B+K', fused)
+    results['2-stream-bk'] = metrics
+else:
+    print('\n[2-Stream] B+K - Label file missing, skipping evaluation')
+
 # 4-stream: J+B+JM+BM
 if label is not None:
     print('\n[4-Stream] J+B+JM+BM')
-    fused = comb([joint, bone, joint_motion, bone_motion], [2, 2, 1, 1])
+    fused = comb([joint, bone, joint_motion, bone_motion], [1, 1, 1, 1])
     metrics = report_stream('J+B+JM+BM', fused)
     results['4-stream'] = metrics
 else:
     print('\n[4-Stream] J+B+JM+BM - Label file missing, skipping evaluation')
 
+# 4-stream: J + K + JM + KM
+if label is not None:
+    print('\n[4-Stream] J+K+JM+KM')
+    fused = comb([joint, kbone, joint_motion, kbone_motion], [1, 1, 1, 1])
+    metrics = report_stream('J+K+JM+KM', fused)
+    results['4-stream-jk'] = metrics
+else:
+    print('\n[4-Stream] J+K+JM+KM - Label file missing, skipping evaluation')
+
+# 4-stream: B + K + BM + KM
+if label is not None:
+    print('\n[4-Stream] B+K+BM+KM')
+    fused = comb([bone, kbone, bone_motion, kbone_motion], [1, 1, 1, 1])
+    metrics = report_stream('B+K+BM+KM', fused)
+    results['4-stream-bk'] = metrics
+else:
+    print('\n[4-Stream] B+K+BM+KM - Label file missing, skipping evaluation')
+
 # 6-stream: J+B+K+JM+BM+KM (the best performing ensemble)
 if label is not None:
-    print('\n[6-Stream] J+B+K+JM+BM+KM (RECOMMENDED)')
+    print('\n[6-Stream] J+B+K+JM+BM+KM')
+    fused = comb([joint, bone, kbone, joint_motion, bone_motion, kbone_motion], [1, 1, 1, 1, 1, 1])
+    metrics = report_stream('J+B+K+JM+BM+KM', fused)
+    results['6-stream'] = metrics
+    print('Best Ensemble')
+else:
+    print('\n[6-Stream] J+B+K+JM+BM+KM - Label file missing, skipping evaluation')
+
+# 6-stream: J+B+K+JM+BM+KM (the best performing ensemble)
+if label is not None:
+    print('\n[6-Stream] J+B+K+JM+BM+KM')
     fused = comb([joint, bone, kbone, joint_motion, bone_motion, kbone_motion], [2, 2, 2, 1, 1, 1])
     metrics = report_stream('J+B+K+JM+BM+KM', fused)
     results['6-stream'] = metrics
     print('Best Ensemble')
 else:
     print('\n[6-Stream] J+B+K+JM+BM+KM - Label file missing, skipping evaluation')
+
+# 6-stream: J+B+K+JM+BM+KM (the best performing ensemble)
+if label is not None:
+    print('\n[6-Stream] J+B+K+JM+BM+KM')
+    fused = comb([joint, bone, kbone, joint_motion, bone_motion, kbone_motion], [1, 1, 1, 2, 2, 2])
+    metrics = report_stream('J+B+K+JM+BM+KM', fused)
+    results['6-stream'] = metrics
+    print('Best Ensemble')
+else:
+    print('\n[6-Stream] J+B+K+JM+BM+KM - Label file missing, skipping evaluation')
+
+# 6-stream: J+B+K+JM+BM+KM (the best performing ensemble)
+if label is not None:
+    print('\n[6-Stream] J+B+K+JM+BM+KM')
+    fused = comb([joint, bone, kbone, joint_motion, bone_motion, kbone_motion], [2, 2, 1, 2, 2, 1])
+    metrics = report_stream('J+B+K+JM+BM+KM', fused)
+    results['6-stream'] = metrics
+    print('Best Ensemble')
+else:
+    print('\n[6-Stream] J+B+K+JM+BM+KM - Label file missing, skipping evaluation')
+
 
 # Save ensemble results
 if results:
