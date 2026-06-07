@@ -63,6 +63,7 @@ class unit_gcn(nn.Module):
         res = self.down(x)
         # K V V
         A = self.A
+        # 1 K 1 1 V V
         A = A[None, :, None, None] 
         
         """

@@ -1,8 +1,11 @@
 import numpy as np
+import logging
 import torch
 
 from ..builder import RECOGNIZERS
 from .base import BaseRecognizer
+
+logger = logging.getLogger(__name__)
 
 
 def _pool_features_before_head(x):
@@ -33,11 +36,21 @@ class RecognizerGCN(BaseRecognizer):
         """Defines the computation performed at every call when training."""
         assert self.with_cls_head
         assert keypoint.shape[1] == 1
+        logger.debug("RecognizerGCN.forward_train: keypoint=%s label=%s", tuple(keypoint.shape), tuple(label.shape))
         keypoint = keypoint[:, 0]
 
         losses = dict()
         x, get_graph = self.extract_feat(keypoint)
+        logger.debug(
+            "RecognizerGCN.forward_train: backbone_out=%s graph=%s",
+            tuple(x.shape) if isinstance(x, torch.Tensor) else type(x).__name__,
+            tuple(get_graph.shape) if isinstance(get_graph, torch.Tensor) else type(get_graph).__name__,
+        )
         cls_score = self.cls_head(x)
+        logger.debug(
+            "RecognizerGCN.forward_train: cls_score=%s",
+            tuple(cls_score.shape) if isinstance(cls_score, torch.Tensor) else type(cls_score).__name__,
+        )
         gt_label = label.squeeze(-1)
         loss = self.cls_head.loss(cls_score, get_graph, gt_label)
         losses.update(loss)
@@ -48,10 +61,16 @@ class RecognizerGCN(BaseRecognizer):
         """Defines the computation performed at every call when evaluation and
         testing."""
         assert self.with_cls_head or self.feat_ext
+        logger.debug("RecognizerGCN.forward_test: keypoint=%s", tuple(keypoint.shape))
         bs, nc = keypoint.shape[:2]
         keypoint = keypoint.reshape((bs * nc, ) + keypoint.shape[2:])
 
         x, get_graph = self.extract_feat(keypoint)
+        logger.debug(
+            "RecognizerGCN.forward_test: backbone_out=%s graph=%s",
+            tuple(x.shape) if isinstance(x, torch.Tensor) else type(x).__name__,
+            tuple(get_graph.shape) if isinstance(get_graph, torch.Tensor) else type(get_graph).__name__,
+        )
         feat_ext = self.test_cfg.get('feat_ext', False)
         pool_opt = self.test_cfg.get('pool_opt', 'all')
         score_ext = self.test_cfg.get('score_ext', False)
@@ -85,6 +104,10 @@ class RecognizerGCN(BaseRecognizer):
                 return x.data.cpu().numpy().astype(np.float16)
 
         cls_score = self.cls_head(x)
+        logger.debug(
+            "RecognizerGCN.forward_test: cls_score=%s",
+            tuple(cls_score.shape) if isinstance(cls_score, torch.Tensor) else type(cls_score).__name__,
+        )
         cls_score = cls_score.reshape(bs, nc, cls_score.shape[-1])
         if 'average_clips' not in self.test_cfg:
             self.test_cfg['average_clips'] = 'prob'

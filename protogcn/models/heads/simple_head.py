@@ -1,3 +1,4 @@
+import logging
 import torch
 import torch.nn as nn
 from mmcv.cnn import normal_init
@@ -7,6 +8,8 @@ import torch.nn.functional as F
 
 from ..builder import HEADS
 from .base import *
+
+logger = logging.getLogger(__name__)
 
 
 @HEADS.register_module()
@@ -40,6 +43,7 @@ class SimpleHead(BaseHead):
         normal_init(self.fc_cls, std=self.init_std)
 
     def forward(self, x):
+        logger.debug("SimpleHead.forward: in=%s", tuple(x.shape) if isinstance(x, torch.Tensor) else type(x).__name__)
 
         if isinstance(x, list):
             for item in x:
@@ -62,4 +66,5 @@ class SimpleHead(BaseHead):
             x = self.dropout(x)
 
         cls_score = self.fc_cls(x)
+        logger.debug("SimpleHead.forward: out=%s", tuple(cls_score.shape) if isinstance(cls_score, torch.Tensor) else type(cls_score).__name__)
         return cls_score

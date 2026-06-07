@@ -1,4 +1,5 @@
 import copy as cp
+import logging
 import torch
 import torch.nn as nn
 from mmcv.cnn import build_norm_layer
@@ -8,6 +9,16 @@ from ..builder import BACKBONES
 from .utils import unit_gcn, mstcn, unit_tcn
 
 EPS = 1e-4
+
+logger = logging.getLogger(__name__)
+
+
+def _shape(x):
+    if isinstance(x, torch.Tensor):
+        return tuple(x.shape)
+    if isinstance(x, (tuple, list)):
+        return [_shape(i) for i in x]
+    return type(x).__name__
 
 
 class GCN_Block(nn.Module):
@@ -38,10 +49,13 @@ class GCN_Block(nn.Module):
 
     def forward(self, x, A=None):
         """Defines the computation performed at every call."""
+        logger.debug("GCN_Block.forward: in=%s", _shape(x))
         res = self.residual(x)
         x, gcl_graph = self.gcn(x, A)
         x = self.tcn(x) + res
-        return self.relu(x), gcl_graph
+        out = self.relu(x)
+        logger.debug("GCN_Block.forward: out=%s graph=%s", _shape(out), _shape(gcl_graph))
+        return out, gcl_graph
 
 
 """
@@ -59,9 +73,12 @@ class Prototype_Reconstruction_Network(nn.Module):
         self.dropout = nn.Dropout(dropout)
         
     def forward(self, x):
+        logger.debug("Prototype_Reconstruction_Network.forward: in=%s", _shape(x))
         query = self.softmax(self.query_matrix(x), dim=-1)
         z = self.memory_matrix(query)
-        return self.dropout(z)
+        out = self.dropout(z)
+        logger.debug("Prototype_Reconstruction_Network.forward: out=%s", _shape(out))
+        return out
 
 
 @BACKBONES.register_module()
@@ -148,6 +165,7 @@ class ProtoGCN(nn.Module):
             load_checkpoint(self, self.pretrained, strict=False)
 
     def forward(self, x):
+        logger.debug("ProtoGCN.forward: input=%s", _shape(x))
         N, M, T, V, C = x.size()
         x = x.permute(0, 1, 3, 4, 2).contiguous()
         if self.data_bn_type == 'MVC':
@@ -155,19 +173,23 @@ class ProtoGCN(nn.Module):
         else:
             x = self.data_bn(x.view(N * M, V * C, T))
         x = x.view(N, M, V, C, T).permute(0, 1, 3, 4, 2).contiguous().view(N * M, C, T, V)
+        logger.debug("ProtoGCN.forward: after_data_bn=%s", _shape(x))
 
         get_graph = []
         for i in range(self.num_stages):
             x, gcl_graph = self.gcn[i](x)
             # N*M C V V
             get_graph.append(gcl_graph)
+            logger.debug("ProtoGCN.forward: stage=%d x=%s graph=%s", i, _shape(x), _shape(gcl_graph))
         
         x = x.reshape((N, M) + x.shape[1:])
         c_graph = x.size(2)
+        logger.debug("ProtoGCN.forward: reshaped_back=%s channels=%d", _shape(x), c_graph)
         
         graph = get_graph[-1]
         # N C V V -> N C V*V
         graph = graph.view(N, M, c_graph, V, V).mean(1).view(N, c_graph, V * V)
+        logger.debug("ProtoGCN.forward: last_graph_pool=%s", _shape(graph))
         
         the_graph_list = []
         for i in range(N):
@@ -185,5 +207,6 @@ class ProtoGCN(nn.Module):
         reconstructed_graph = self.relu(self.bn(re_graph))
         # N V*V
         reconstructed_graph = reconstructed_graph.mean(1).view(N, -1)
+        logger.debug("ProtoGCN.forward: reconstructed_graph=%s", _shape(reconstructed_graph))
         
         return x, reconstructed_graph
