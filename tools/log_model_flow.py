@@ -50,6 +50,22 @@ def _shape_of(obj):
     return type(obj).__name__
 
 
+def _first_tensor_shape(obj):
+    if torch.is_tensor(obj):
+        return tuple(obj.shape)
+    if isinstance(obj, (list, tuple)):
+        for item in obj:
+            shape = _first_tensor_shape(item)
+            if shape is not None:
+                return shape
+    if isinstance(obj, dict):
+        for item in obj.values():
+            shape = _first_tensor_shape(item)
+            if shape is not None:
+                return shape
+    return None
+
+
 def _count_params(module):
     total = sum(p.numel() for p in module.parameters())
     trainable = sum(p.numel() for p in module.parameters() if p.requires_grad)
@@ -115,6 +131,105 @@ def _overall_architecture_section(model):
     return lines
 
 
+def _gcn_tcn_flow_section():
+    lines = []
+    lines.append("```mermaid")
+    lines.append("flowchart TD")
+    lines.append("    X[Input x: N x C x T x V]")
+    lines.append("    R[Residual branch]")
+    lines.append("    G[unit_gcn]")
+    lines.append("    T[mstcn]")
+    lines.append("    A[Add residual]")
+    lines.append("    Y[Output y]")
+    lines.append("")
+    lines.append("    X --> R")
+    lines.append("    X --> G")
+    lines.append("    G --> T")
+    lines.append("    T --> A")
+    lines.append("    R --> A")
+    lines.append("    A --> Y")
+    lines.append("")
+    lines.append("    subgraph GCN[unit_gcn]")
+    lines.append("        G1[Learn / update adjacency]")
+    lines.append("        G2[Spatial aggregation over joints V]")
+    lines.append("        G3[Return x_gcn and graph]")
+    lines.append("        G1 --> G2 --> G3")
+    lines.append("    end")
+    lines.append("")
+    lines.append("    subgraph TCN[mstcn]")
+    lines.append("        T1[Multi-scale temporal branches]")
+    lines.append("        T2[Concat branches on channel dim]")
+    lines.append("        T3[Temporal mixing + BN + Dropout]")
+    lines.append("        T1 --> T2 --> T3")
+    lines.append("    end")
+    lines.append("```")
+    lines.append("")
+    lines.append("- `unit_gcn` learns spatial relationships between joints using the graph adjacency.")
+    lines.append("- `mstcn` models temporal evolution across frames, usually keeping `V` fixed and changing `T` only when `stride > 1`.")
+    lines.append("- The residual path preserves the original signal so the block behaves like `mstcn(unit_gcn(x)) + residual(x)` before `ReLU`.")
+    return lines
+
+
+def _register_size_hooks(model):
+    records = []
+    handles = []
+
+    backbone = getattr(model, "backbone", None)
+    if backbone is not None and hasattr(backbone, "gcn"):
+        for idx, block in enumerate(backbone.gcn):
+            def _make_block_hook(block_idx):
+                def _hook(module, inputs, output):
+                    out_tensor = output[0] if isinstance(output, (tuple, list)) else output
+                    records.append({
+                        "name": f"GCN Block {block_idx + 1}",
+                        "input": _first_tensor_shape(inputs[0]),
+                        "output": _first_tensor_shape(out_tensor),
+                    })
+                return _hook
+
+            handles.append(block.register_forward_hook(_make_block_hook(idx)))
+
+    cls_head = getattr(model, "cls_head", None)
+    if cls_head is not None:
+        def _cls_hook(module, inputs, output):
+            records.append({
+                "name": "Classifier",
+                "input": _first_tensor_shape(inputs[0]),
+                "output": _first_tensor_shape(output),
+            })
+
+        handles.append(cls_head.register_forward_hook(_cls_hook))
+
+    return handles, records
+
+
+def _format_size(shape):
+    if shape is None:
+        return "?"
+    return " x ".join(str(dim) for dim in shape)
+
+
+def _size_flow_section(records):
+    lines = []
+    lines.append("```mermaid")
+    lines.append("flowchart LR")
+    for i, record in enumerate(records):
+        node_in = f"N{i}_IN"
+        node_out = f"N{i}_OUT"
+        label = record["name"]
+        lines.append(f'    {node_in}["{label} in\\n{_format_size(record["input"])}"]')
+        lines.append(f'    {node_out}["{label} out\\n{_format_size(record["output"])}"]')
+        lines.append(f"    {node_in} --> {node_out}")
+        if i < len(records) - 1:
+            lines.append(f"    {node_out} --> N{i+1}_IN")
+    lines.append("```")
+    lines.append("")
+    lines.append("### Table")
+    for record in records:
+        lines.append(f"- {record['name']}: `{_format_size(record['input'])}` -> `{_format_size(record['output'])}`")
+    return lines
+
+
 def _module_details_section(model):
     lines = []
     for child_name, child in model.named_children():
@@ -138,9 +253,11 @@ def write_architecture_report(model, path):
     lines.append("## 2. Overall Architecture")
     lines.extend(f"- {line}" if not line.startswith("-") else line for line in _overall_architecture_section(model))
     lines.append("")
-    lines.append("## 3. Module Details")
+    lines.append("## 3. GCN/TCN Flow")
+    lines.extend(_gcn_tcn_flow_section())
+    lines.append("## 4. Module Details")
     lines.extend(_module_details_section(model))
-    lines.append("## 4. Full Model Detail")
+    lines.append("## 5. Full Model Detail")
     lines.extend(_full_model_details_section(model))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -224,9 +341,21 @@ def main():
     device = torch.device(args.device)
     batch = _to_device(batch, device)
 
+    size_handles, size_records = _register_size_hooks(model)
     logger.info("=== Forward Flow ===")
     with torch.no_grad():
         outputs = model(return_loss=True, **batch)
+    for handle in size_handles:
+        handle.remove()
+
+    logger.info("=== Size Flow ===")
+    for record in size_records:
+        logger.info(
+            "%s: %s -> %s",
+            record["name"],
+            _format_size(record["input"]),
+            _format_size(record["output"]),
+        )
 
     logger.info("Forward output keys: %s", list(outputs.keys()))
     for key, value in outputs.items():

@@ -52,7 +52,14 @@ class GCN_Block(nn.Module):
         logger.debug("GCN_Block.forward: in=%s", _shape(x))
         res = self.residual(x)
         x, gcl_graph = self.gcn(x, A)
-        x = self.tcn(x) + res
+        logger.debug(
+            "GCN_Block.forward: mstcn_in=%s residual=%s",
+            _shape(x),
+            _shape(res),
+        )
+        tcn_out = self.tcn(x)
+        logger.debug("GCN_Block.forward: mstcn_out=%s", _shape(tcn_out))
+        x = tcn_out + res
         out = self.relu(x)
         logger.debug("GCN_Block.forward: out=%s graph=%s", _shape(out), _shape(gcl_graph))
         return out, gcl_graph
