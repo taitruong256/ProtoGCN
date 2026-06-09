@@ -31,6 +31,8 @@ class GCN_Block(nn.Module):
                 value = kwargs.pop(arg)
                 kwargs['tcn_' + arg] = value
                 kwargs['gcn_' + arg] = value
+        if 'view_num' in kwargs:
+            kwargs['gcn_view_num'] = kwargs.pop('view_num')
         gcn_kwargs = {k[4:]: v for k, v in kwargs.items() if k[:4] == 'gcn_'}
         tcn_kwargs = {k[4:]: v for k, v in kwargs.items() if k[:4] == 'tcn_'}
         kwargs = {k: v for k, v in kwargs.items() if k[1:4] != 'cn_'}

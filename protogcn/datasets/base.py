@@ -260,6 +260,7 @@ class BaseDataset(Dataset, metaclass=ABCMeta):
             results['label'] = onehot
 
         results['test_mode'] = self.test_mode
+        results['idx'] = idx
         
         return self.pipeline(results)
 
