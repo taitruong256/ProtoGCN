@@ -9,9 +9,11 @@ model = dict(
         type='ProtoGCN',
         in_channels=3,
         num_prototype=300,
+        view_num=11,
         tcn_ms_cfg=[(3, 1), (3, 2), (3, 3), (3, 4), ('max', 3), '1x1'],
         graph_cfg=dict(layout=graph, mode='random', num_filter=8, init_off=.04, init_std=.02)),
     cls_head=dict(type='SimpleHead', joint_cfg=graph, num_classes=num_classes, in_channels=384, weight=0.2),
+    view_loss_weight=1.0,
     test_cfg=dict(feat_ext=True, pool_opt='nmtv'))
 
 dataset_type = 'CasiaBGaitDataset'
@@ -23,21 +25,21 @@ train_pipeline = [
     dict(type='GenSkeFeat', dataset=graph, feats=[modality]),
     dict(type='UniformSampleDecode', clip_len=100),
     dict(type='FormatGCNInput', num_person=1),
-    dict(type='Collect', keys=['keypoint', 'label'], meta_keys=[]),
+    dict(type='Collect', keys=['keypoint', 'label'], meta_keys=['idx', 'subject', 'condition', 'view', 'sequence', 'frame_dir']),
     dict(type='ToTensor', keys=['keypoint'])
 ]
 val_pipeline = [
     dict(type='GenSkeFeat', dataset=graph, feats=[modality]),
     dict(type='UniformSampleDecode', clip_len=100, num_clips=1),
     dict(type='FormatGCNInput', num_person=1),
-    dict(type='Collect', keys=['keypoint', 'label'], meta_keys=[]),
+    dict(type='Collect', keys=['keypoint', 'label'], meta_keys=['idx', 'subject', 'condition', 'view', 'sequence', 'frame_dir']),
     dict(type='ToTensor', keys=['keypoint'])
 ]
 test_pipeline = [
     dict(type='GenSkeFeat', dataset=graph, feats=[modality]),
     dict(type='UniformSampleDecode', clip_len=100, num_clips=10),
     dict(type='FormatGCNInput', num_person=1),
-    dict(type='Collect', keys=['keypoint', 'label'], meta_keys=[]),
+    dict(type='Collect', keys=['keypoint', 'label'], meta_keys=['idx', 'subject', 'condition', 'view', 'sequence', 'frame_dir']),
     dict(type='ToTensor', keys=['keypoint'])
 ]
 data = dict(

@@ -1,6 +1,7 @@
 import numpy as np
 import logging
 import torch
+import torch.nn as nn
 
 from ..builder import RECOGNIZERS
 from .base import BaseRecognizer
@@ -28,9 +29,73 @@ def _pool_features_before_head(x):
     return x
 
 
+def _unwrap_meta(meta):
+    if meta is None:
+        return None
+    if hasattr(meta, 'data'):
+        return _unwrap_meta(meta.data)
+    if isinstance(meta, (list, tuple)):
+        return [_unwrap_meta(item) for item in meta]
+    return meta
+
+
+def _view_to_index(view, num_views):
+    if isinstance(view, torch.Tensor):
+        view = view.detach().cpu().view(-1)[0].item()
+    elif isinstance(view, np.ndarray):
+        view = np.asarray(view).reshape(-1)[0].item()
+
+    if isinstance(view, str):
+        view = view.strip()
+        if view.isdigit():
+            view = int(view)
+        else:
+            view = int(float(view))
+
+    view = int(view)
+    if 0 <= view < num_views:
+        return view
+    if 0 <= view <= 180 and view % 18 == 0:
+        return view // 18
+    raise ValueError(f'Unsupported view value: {view}')
+
+
 @RECOGNIZERS.register_module()
 class RecognizerGCN(BaseRecognizer):
     """GCN-based recognizer for skeleton-based action recognition. """
+
+    def __init__(self,
+                 backbone,
+                 cls_head=None,
+                 train_cfg=dict(),
+                 test_cfg=dict(),
+                 view_num=11,
+                 view_loss_weight=1.0,
+                 view_label_key='view',
+                 **kwargs):
+        self.view_num = view_num
+        self.view_loss_weight = view_loss_weight
+        self.view_label_key = view_label_key
+        super().__init__(backbone, cls_head=cls_head, train_cfg=train_cfg, test_cfg=test_cfg)
+        self.view_loss = nn.CrossEntropyLoss()
+
+    def _extract_view_labels(self, img_metas, device):
+        img_metas = _unwrap_meta(img_metas)
+        if img_metas is None:
+            return None
+        if isinstance(img_metas, dict):
+            img_metas = [img_metas]
+        elif not isinstance(img_metas, (list, tuple)):
+            img_metas = [img_metas]
+
+        view_labels = []
+        for meta in img_metas:
+            if isinstance(meta, dict):
+                view = meta.get(self.view_label_key, meta.get('view'))
+            else:
+                view = meta
+            view_labels.append(_view_to_index(view, self.view_num))
+        return torch.tensor(view_labels, device=device, dtype=torch.long)
 
     def forward_train(self, keypoint, label, **kwargs):
         """Defines the computation performed at every call when training."""
@@ -54,6 +119,25 @@ class RecognizerGCN(BaseRecognizer):
         gt_label = label.squeeze(-1)
         loss = self.cls_head.loss(cls_score, get_graph, gt_label)
         losses.update(loss)
+
+        view_logits = getattr(self.backbone, 'view_logits', None)
+        if view_logits is None:
+            raise RuntimeError('Backbone did not produce view logits. Check unit_gcn/view_num configuration.')
+
+        view_label = self._extract_view_labels(kwargs.get('img_metas'), device=gt_label.device)
+        if view_label is None:
+            raise ValueError(
+                'img_metas is required to train the view classifier. '
+                'Make sure the pipeline Collect step keeps the `view` meta key.'
+            )
+
+        if view_logits.size(0) != view_label.size(0):
+            raise ValueError(
+                f'View logits batch size {view_logits.size(0)} does not match '
+                f'view labels batch size {view_label.size(0)}.'
+            )
+
+        losses['loss_view'] = self.view_loss(view_logits, view_label) * self.view_loss_weight
 
         return losses
 

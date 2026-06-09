@@ -183,10 +183,14 @@ class ProtoGCN(nn.Module):
         logger.debug("ProtoGCN.forward: after_data_bn=%s", _shape(x))
 
         get_graph = []
+        view_logits_list = []
         for i in range(self.num_stages):
             x, gcl_graph = self.gcn[i](x)
             # N*M C V V
             get_graph.append(gcl_graph)
+            view_logits = getattr(self.gcn[i].gcn, 'last_view_logits', None)
+            if view_logits is not None:
+                view_logits_list.append(view_logits)
             logger.debug("ProtoGCN.forward: stage=%d x=%s graph=%s", i, _shape(x), _shape(gcl_graph))
         
         x = x.reshape((N, M) + x.shape[1:])
@@ -215,5 +219,12 @@ class ProtoGCN(nn.Module):
         # N V*V
         reconstructed_graph = reconstructed_graph.mean(1).view(N, -1)
         logger.debug("ProtoGCN.forward: reconstructed_graph=%s", _shape(reconstructed_graph))
+
+        if len(view_logits_list) > 0:
+            view_logits = torch.stack(view_logits_list, dim=0).mean(dim=0)
+            view_logits = view_logits.view(N, M, -1).mean(dim=1)
+            self.view_logits = view_logits
+        else:
+            self.view_logits = None
         
         return x, reconstructed_graph
