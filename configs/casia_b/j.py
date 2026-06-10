@@ -1,7 +1,7 @@
 modality = 'j'
 graph = 'coco'
 num_classes = 74 
-work_dir = f'./work_dirs/casia_b/j_4'
+work_dir = f'./work_dirs/casia_b/j_new'
 
 model = dict(
     type='RecognizerGCN',
@@ -14,7 +14,7 @@ model = dict(
         graph_cfg=dict(layout=graph, mode='random', num_filter=8, init_off=.04, init_std=.02)),
     cls_head=dict(type='SimpleHead', joint_cfg=graph, num_classes=num_classes, in_channels=384, weight=0.2),
     view_loss_weight=1.0,
-    test_cfg=dict(feat_ext=True, pool_opt='nmtv', return_view_score=True))
+    test_cfg=dict(feat_ext=True, pool_opt='nmtv'))
 
 dataset_type = 'CasiaBGaitDataset'
 train_ann_file = 'data/casia-b/casia-b_pose_train.csv'
@@ -55,11 +55,11 @@ data = dict(
 optimizer = dict(type='SGD', lr=0.025, momentum=0.9, weight_decay=0.0005, nesterov=True)
 optimizer_config = dict(grad_clip=None)
 lr_config = dict(policy='CosineAnnealing', min_lr=0, by_epoch=False)
-total_epochs = 150
-checkpoint_config = dict(interval=total_epochs, max_keep_ckpts=1, save_last=True)
+total_epochs = 200
+checkpoint_config = dict(interval=1, max_keep_ckpts=1, save_last=True)
 evaluation = dict(
     interval=1,
-    metrics=['gait_rank1', 'gait_contrastive_loss', 'view_acc'],
+    metrics=['gait_rank1', 'gait_contrastive_loss'],
     save_best='gait_contrastive_loss',
     rule='less')
 log_config = dict(interval=100, hooks=[dict(type='TextLoggerHook')])
