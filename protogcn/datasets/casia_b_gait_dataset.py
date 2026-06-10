@@ -111,6 +111,28 @@ class CasiaBGaitDataset(BaseDataset):
         return 'ignore'
 
     @staticmethod
+    def _view_to_index(view, num_views=11):
+        if isinstance(view, (list, tuple)) and len(view) > 0:
+            view = view[0]
+        if hasattr(view, 'item'):
+            try:
+                view = view.item()
+            except Exception:
+                pass
+        if isinstance(view, str):
+            view = view.strip()
+            if view.isdigit():
+                view = int(view)
+            else:
+                view = int(float(view))
+        view = int(view)
+        if 0 <= view < num_views:
+            return view
+        if 0 <= view <= 180 and view % 18 == 0:
+            return view // 18
+        raise ValueError(f'Unsupported view value: {view}')
+
+    @staticmethod
     def _to_feature(result):
         feat = np.asarray(result, dtype=np.float32)
         feat = feat.reshape(-1, feat.shape[-3]) if feat.ndim >= 3 else feat.reshape(1, -1)
@@ -153,14 +175,25 @@ class CasiaBGaitDataset(BaseDataset):
             f'{len(results)} != {len(self)}')
 
         metrics = metrics if isinstance(metrics, (list, tuple)) else [metrics]
-        allowed_metrics = ['gait_rank1', 'gait_contrastive_loss']
+        allowed_metrics = ['gait_rank1', 'gait_contrastive_loss', 'view_acc']
         for metric in metrics:
             if metric not in allowed_metrics:
                 raise KeyError(f'metric {metric} is not supported')
 
-        features = np.stack([self._to_feature(result) for result in results])
+        view_scores = None
+        if len(results) > 0 and isinstance(results[0], (tuple, list)):
+            features = np.stack([self._to_feature(result[0]) for result in results])
+            if len(results[0]) > 1:
+                view_scores = np.stack([
+                    np.asarray(result[1], dtype=np.float32) for result in results
+                ])
+        else:
+            features = np.stack([self._to_feature(result) for result in results])
         labels = np.array([ann['label'] for ann in self.video_infos])
         roles = np.array([ann.get('gait_role', 'probe') for ann in self.video_infos])
+        view_labels = np.array([
+            self._view_to_index(ann.get('view', 0)) for ann in self.video_infos
+        ])
 
         gallery_mask = roles == 'gallery'
         probe_mask = roles == 'probe'
@@ -216,6 +249,18 @@ class CasiaBGaitDataset(BaseDataset):
             print_log(
                 f'\ngait_contrastive_loss\t{eval_results["gait_contrastive_loss"]:.4f}',
                 logger=logger)
+
+        if 'view_acc' in metrics:
+            if view_scores is None:
+                raise ValueError(
+                    'view_acc was requested, but model outputs did not include view scores. '
+                    'Enable `return_view_score=True` in test_cfg.'
+                )
+            msg = '\nEvaluating view_acc ...' if logger is None else 'Evaluating view_acc ...'
+            print_log(msg, logger=logger)
+            pred_view = np.argmax(view_scores, axis=1)
+            eval_results['view_acc'] = float((pred_view == view_labels).mean())
+            print_log(f'\nview_acc\t{eval_results["view_acc"]:.4f}', logger=logger)
 
         return eval_results
 

@@ -138,6 +138,8 @@ class RecognizerGCN(BaseRecognizer):
             )
 
         losses['loss_view'] = self.view_loss(view_logits, view_label) * self.view_loss_weight
+        with torch.no_grad():
+            losses['view_acc'] = (view_logits.argmax(dim=1) == view_label).float().mean()
 
         return losses
 
@@ -156,6 +158,7 @@ class RecognizerGCN(BaseRecognizer):
             tuple(get_graph.shape) if isinstance(get_graph, torch.Tensor) else type(get_graph).__name__,
         )
         feat_ext = self.test_cfg.get('feat_ext', False)
+        return_view_score = self.test_cfg.get('return_view_score', False)
         pool_opt = self.test_cfg.get('pool_opt', 'all')
         score_ext = self.test_cfg.get('score_ext', False)
         if feat_ext or score_ext:
@@ -165,7 +168,16 @@ class RecognizerGCN(BaseRecognizer):
             if feat_ext:
                 feat = _pool_features_before_head(x)
                 feat = feat.reshape(bs, nc, -1).mean(dim=1)
-                return feat.data.cpu().numpy().astype(np.float32)
+                if not return_view_score:
+                    return feat.data.cpu().numpy().astype(np.float32)
+
+                view_logits = getattr(self.backbone, 'view_logits', None)
+                if view_logits is None:
+                    raise RuntimeError('Backbone did not produce view logits.')
+                view_score = view_logits.reshape(bs, nc, -1).mean(dim=1)
+                feat = feat.data.cpu().numpy().astype(np.float32)
+                view_score = view_score.data.cpu().numpy().astype(np.float32)
+                return feat, view_score
 
             if pool_opt == 'all':
                 pool_opt = 'nmtv'
