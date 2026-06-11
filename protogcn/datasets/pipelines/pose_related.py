@@ -408,6 +408,122 @@ class ToMotion:
 
 
 @PIPELINES.register_module()
+class JointToAngle:
+    """Convert joints into the single-channel GPGait angle descriptor.
+
+    This mirrors ``HOD_MultiInput`` in FastPoseGait:
+    - inner joints use the cosine law on a three-joint tuple
+    - edge joints use a synthetic right point to form the peripheral angle
+    - the returned tensor keeps only the angle channel
+    """
+
+    def __init__(self, dataset='nturgb+d', source='keypoint', target='angle'):
+        self.dataset = dataset
+        self.source = source
+        self.target = target
+
+        if self.dataset == 'coco':
+            self.angle_list = [
+                (0, 1, 2),
+                (1, 0, 3),
+                (2, 4, 0),
+                (3, 1),
+                (4, 2),
+                (5, 7, 11),
+                (6, 8, 12),
+                (7, 5, 9),
+                (8, 10, 6),
+                (9, 7),
+                (10, 8),
+                (11, 5, 13),
+                (12, 6, 14),
+                (13, 11, 15),
+                (14, 12, 16),
+                (15, 13),
+                (16, 14),
+            ]
+        elif self.dataset in ['openpose', 'openpose_new']:
+            self.angle_list = [
+                (0, 15, 14),
+                (15, 0, 17),
+                (14, 16, 0),
+                (17, 15),
+                (16, 14),
+                (5, 6, 11),
+                (2, 3, 8),
+                (6, 3, 8),
+                (3, 4, 2),
+                (7, 6),
+                (4, 3),
+                (11, 5, 12),
+                (8, 2, 9),
+                (12, 11, 13),
+                (9, 8, 10),
+                (13, 12),
+                (10, 9),
+            ]
+        else:
+            raise ValueError(
+                f'The dataset type {self.dataset} is not supported for angle descriptors'
+            )
+
+    @staticmethod
+    def _cos_law(center, left, right):
+        side1 = np.sqrt((center[0, :] - left[0, :]) ** 2 + (center[1, :] - left[1, :]) ** 2)
+        side2 = np.sqrt((center[0, :] - right[0, :]) ** 2 + (center[1, :] - right[1, :]) ** 2)
+        side3 = np.sqrt((left[0, :] - right[0, :]) ** 2 + (left[1, :] - right[1, :]) ** 2)
+        deno = side1 * side2
+        where_zero = np.where(deno == 0)
+        deno[where_zero] = 1
+        cos = (side1 * side1 + side2 * side2 - side3 * side3) / (2 * deno)
+        cos = np.clip(cos, -1.0, 1.0)
+        data_return = np.pi - np.arccos(cos)
+        data_return[where_zero] = np.pi
+        return data_return
+
+    @classmethod
+    def _cal_edge_angle(cls, center, left):
+        right = np.zeros_like(center)
+        right[0, :] = center[0, :]
+        right[1, :] = left[1, :]
+        return cls._cos_law(center, left, right)
+
+    @classmethod
+    def _cal_inner_angle(cls, center, left, right):
+        return cls._cos_law(center, left, right)
+
+    def __call__(self, results):
+        data = results[self.source]
+        M, T, V, C = data.shape
+        if len(self.angle_list) != V:
+            raise ValueError(
+                f'Angle feature expects {len(self.angle_list)} joints for {self.dataset}, '
+                f'but got {V}.'
+            )
+
+        angle = np.zeros((M, T, V, 1), dtype=np.float32)
+        coords = np.transpose(data[..., :2], (0, 3, 1, 2))  # M, 2, T, V
+
+        for m in range(M):
+            person = coords[m]  # 2, T, V
+            for i, angle_def in enumerate(self.angle_list):
+                if len(angle_def) == 3:
+                    center = person[:, :, angle_def[0]]
+                    left = person[:, :, angle_def[1]]
+                    right = person[:, :, angle_def[2]]
+                    angle[m, :, i, 0] = self._cal_inner_angle(center, left, right)
+                else:
+                    center = person[:, :, angle_def[0]]
+                    left = person[:, :, angle_def[1]]
+                    angle[m, :, i, 0] = self._cal_edge_angle(center, left)
+
+        angle = np.nan_to_num(angle)
+
+        results[self.target] = angle
+        return results
+
+
+@PIPELINES.register_module()
 class MergeSkeFeat:
     def __init__(self, feat_list=['keypoint'], target='keypoint', axis=-1):
         """Merge different feats (ndarray) by concatenate them in the last axis. """
@@ -436,6 +552,8 @@ class GenSkeFeat:
             ops.append(JointToBone(dataset=dataset, target='b'))
         if 'k' in feats or 'km' in feats:
             ops.append(JointToKB(dataset=dataset, target='k'))
+        if 'a' in feats:
+            ops.append(JointToAngle(dataset=dataset, source='keypoint', target='a'))
         ops.append(Rename({'keypoint': 'j'}))
         if 'jm' in feats:
             ops.append(ToMotion(dataset=dataset, source='j', target='jm'))
