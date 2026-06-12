@@ -552,7 +552,7 @@ class GenSkeFeat:
             ops.append(JointToBone(dataset=dataset, target='b'))
         if 'k' in feats or 'km' in feats:
             ops.append(JointToKB(dataset=dataset, target='k'))
-        if 'a' in feats:
+        if 'a' in feats or 'am' in feats:
             ops.append(JointToAngle(dataset=dataset, source='keypoint', target='a'))
         ops.append(Rename({'keypoint': 'j'}))
         if 'jm' in feats:
@@ -561,6 +561,8 @@ class GenSkeFeat:
             ops.append(ToMotion(dataset=dataset, source='b', target='bm'))
         if 'km' in feats:
             ops.append(ToMotion(dataset=dataset, source='k', target='km'))
+        if 'am' in feats:
+            ops.append(ToMotion(dataset=dataset, source='a', target='am'))
         ops.append(MergeSkeFeat(feat_list=feats, axis=axis))
         self.ops = Compose(ops)
 

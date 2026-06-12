@@ -1,7 +1,7 @@
-modality = 'a'
+modality = 'am'
 graph = 'coco'
 num_classes = 74
-work_dir = f'./work_dirs/casia_b/a'
+work_dir = f'./work_dirs/casia_b/am'
 
 model = dict(
     type='RecognizerGCN',
