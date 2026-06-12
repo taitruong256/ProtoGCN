@@ -396,7 +396,7 @@ class ToMotion:
         M, T, V, C = data.shape
         motion = np.zeros_like(data)
 
-        assert C in [2, 3]
+        assert C in [1, 2, 3]
         motion[:, :T - 1] = np.diff(data, axis=1)
         if C == 3 and self.dataset in ['openpose', 'coco']:
             score = (data[:, :T - 1, :, 2] + data[:, 1:, :, 2]) / 2
@@ -404,6 +404,31 @@ class ToMotion:
 
         results[self.target] = motion
 
+        return results
+
+
+@PIPELINES.register_module()
+class JointToRelative:
+    """Convert joints into the relative feature J_i - J_0.
+
+    The output keeps the two coordinate channels (x, y). For the root joint
+    itself, the relative vector becomes zero.
+    """
+
+    def __init__(self, source='keypoint', target='r'):
+        self.source = source
+        self.target = target
+
+    def __call__(self, results):
+        data = results[self.source]
+        M, T, V, C = data.shape
+        if C not in [2, 3]:
+            raise ValueError(f'Relative feature expects 2D keypoints, but got C={C}')
+
+        coords = data[..., :2].astype(np.float32)
+        root = coords[..., :1, :]
+        relative = coords - root
+        results[self.target] = relative
         return results
 
 
@@ -552,6 +577,8 @@ class GenSkeFeat:
             ops.append(JointToBone(dataset=dataset, target='b'))
         if 'k' in feats or 'km' in feats:
             ops.append(JointToKB(dataset=dataset, target='k'))
+        if 'r' in feats or 'rm' in feats:
+            ops.append(JointToRelative(source='keypoint', target='r'))
         if 'a' in feats or 'am' in feats:
             ops.append(JointToAngle(dataset=dataset, source='keypoint', target='a'))
         ops.append(Rename({'keypoint': 'j'}))
@@ -561,6 +588,8 @@ class GenSkeFeat:
             ops.append(ToMotion(dataset=dataset, source='b', target='bm'))
         if 'km' in feats:
             ops.append(ToMotion(dataset=dataset, source='k', target='km'))
+        if 'rm' in feats:
+            ops.append(ToMotion(dataset=dataset, source='r', target='rm'))
         if 'am' in feats:
             ops.append(ToMotion(dataset=dataset, source='a', target='am'))
         ops.append(MergeSkeFeat(feat_list=feats, axis=axis))
