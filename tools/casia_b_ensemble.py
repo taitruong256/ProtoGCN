@@ -13,12 +13,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from protogcn.smp import comb
 
 # Paths for CASIA-B predictions
-joint_path = '/home/HardDisk/Tai/ProtoGCN/work_dirs/casia_b/j_3/best_pred.pkl'
-bone_path = '/home/HardDisk/Tai/ProtoGCN/work_dirs/casia_b/b/best_pred.pkl'
-kbone_path = '/home/HardDisk/Tai/ProtoGCN/work_dirs/casia_b/k/best_pred.pkl'
-joint_motion_path = '/home/HardDisk/Tai/ProtoGCN/work_dirs/casia_b/jm/best_pred.pkl'
-bone_motion_path = '/home/HardDisk/Tai/ProtoGCN/work_dirs/casia_b/bm/best_pred.pkl'
-kbone_motion_path = '/home/HardDisk/Tai/ProtoGCN/work_dirs/casia_b/km/best_pred.pkl'
+joint_path = '/home/HardDisk/Tai/ProtoGCN/work_dirs/casia_b/j_new/best_pred.pkl'
+bone_path = '/home/HardDisk/Tai/ProtoGCN/work_dirs/casia_b/b_new/best_pred.pkl'
+kbone_path = '/home/HardDisk/Tai/ProtoGCN/work_dirs/casia_b/k_new/best_pred.pkl'
+joint_motion_path = '/home/HardDisk/Tai/ProtoGCN/work_dirs/casia_b/jm_new/best_pred.pkl'
+bone_motion_path = '/home/HardDisk/Tai/ProtoGCN/work_dirs/casia_b/bm_new/best_pred.pkl'
+kbone_motion_path = '/home/HardDisk/Tai/ProtoGCN/work_dirs/casia_b/km_new/best_pred.pkl'
+angle_path = '/home/HardDisk/Tai/ProtoGCN/work_dirs/casia_b/a_new/best_pred.pkl'
 
 
 def _seq_name_from_image_name(image_name):
@@ -149,6 +150,7 @@ try:
     joint_motion = load(joint_motion_path)
     bone_motion = load(bone_motion_path)
     kbone_motion = load(kbone_motion_path)
+    angle = load(angle_path)
     print("All predictions loaded successfully")
 except FileNotFoundError as e:
     print(f"Error: {e}")
@@ -256,45 +258,23 @@ if label is not None:
 else:
     print('\n[4-Stream] B+K+BM+KM - Label file missing, skipping evaluation')
 
-# 6-stream: J+B+K+JM+BM+KM (the best performing ensemble)
+# 6-stream: J+B+K+JM+BM+KM 
 if label is not None:
     print('\n[6-Stream] J+B+K+JM+BM+KM')
     fused = comb([joint, bone, kbone, joint_motion, bone_motion, kbone_motion], [1, 1, 1, 1, 1, 1])
     metrics = report_stream('J+B+K+JM+BM+KM', fused)
     results['6-stream'] = metrics
-    print('Best Ensemble')
 else:
     print('\n[6-Stream] J+B+K+JM+BM+KM - Label file missing, skipping evaluation')
 
-# 6-stream: J+B+K+JM+BM+KM (the best performing ensemble)
+# 7-stream: J+B+K+JM+BM+KM+A 
 if label is not None:
-    print('\n[6-Stream] J+B+K+JM+BM+KM')
-    fused = comb([joint, bone, kbone, joint_motion, bone_motion, kbone_motion], [2, 2, 2, 1, 1, 1])
-    metrics = report_stream('J+B+K+JM+BM+KM', fused)
-    results['6-stream'] = metrics
-    print('Best Ensemble')
+    print('\n[7-Stream] J+B+K+JM+BM+KM+A')
+    fused = comb([joint, bone, kbone, joint_motion, bone_motion, kbone_motion, angle], [1, 1, 1, 1, 1, 1, 1])
+    metrics = report_stream('J+B+K+JM+BM+KM+A', fused)
+    results['7-stream'] = metrics
 else:
-    print('\n[6-Stream] J+B+K+JM+BM+KM - Label file missing, skipping evaluation')
-
-# 6-stream: J+B+K+JM+BM+KM (the best performing ensemble)
-if label is not None:
-    print('\n[6-Stream] J+B+K+JM+BM+KM')
-    fused = comb([joint, bone, kbone, joint_motion, bone_motion, kbone_motion], [1, 1, 1, 2, 2, 2])
-    metrics = report_stream('J+B+K+JM+BM+KM', fused)
-    results['6-stream'] = metrics
-    print('Best Ensemble')
-else:
-    print('\n[6-Stream] J+B+K+JM+BM+KM - Label file missing, skipping evaluation')
-
-# 6-stream: J+B+K+JM+BM+KM (the best performing ensemble)
-if label is not None:
-    print('\n[6-Stream] J+B+K+JM+BM+KM')
-    fused = comb([joint, bone, kbone, joint_motion, bone_motion, kbone_motion], [2, 2, 1, 2, 2, 1])
-    metrics = report_stream('J+B+K+JM+BM+KM', fused)
-    results['6-stream'] = metrics
-    print('Best Ensemble')
-else:
-    print('\n[6-Stream] J+B+K+JM+BM+KM - Label file missing, skipping evaluation')
+    print('\n[7-Stream] J+B+K+JM+BM+KM+A - Label file missing, skipping evaluation')
 
 
 # Save ensemble results
@@ -309,6 +289,4 @@ if results:
     print("="*60)
 
 # Optionally save the fused predictions
-# dump(fused, '../work_dirs/casia_b/ensemble/6stream_pred.pkl')
-print("\nNote: Labels file is required for accuracy evaluation.")
-print("Ensure you have the proper label file in the path specified.")
+# dump(fused, '../work_dirs/casia_b/ensemble/7stream_pred.pkl')
