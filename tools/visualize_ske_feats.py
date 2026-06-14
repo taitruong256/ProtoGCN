@@ -1,4 +1,4 @@
-"""Render the six CASIA-B ensemble features as SVG figures.
+"""Render the CASIA-B feature figures as SVG figures.
 
 The feature definitions follow the formulas in
 ``protogcn/datasets/pipelines/pose_related.py``:
@@ -9,6 +9,8 @@ The feature definitions follow the formulas in
 * ``joint_motion``: ``joint[t + 1] - joint[t]``
 * ``bone_motion``: ``bone[t + 1] - bone[t]``
 * ``key-bone_motion``: ``key-bone[t + 1] - key-bone[t]``
+* ``angle``: joint angle descriptor from ``JointToAngle``
+* ``relative``: relative joint offset from ``JointToRelative``
 
 The figures are saved under ``data/figures/features/<sequence>/`` by default.
 This script is intentionally dependency-light and writes self-contained SVGs.
@@ -18,12 +20,20 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import os
 from collections import defaultdict
 from html import escape
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
+import matplotlib
+
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt
+from matplotlib.colors import TwoSlopeNorm
+import numpy as np
 
 COCO_KEYPOINTS: Tuple[str, ...] = (
     "nose",
@@ -110,6 +120,26 @@ KEY_BONE_TREE_EDGES: Tuple[Tuple[int, int], ...] = tuple(
     (child, parent) for child, parent in KEY_BONE_PARENT_MAP.items() if child != parent
 )
 
+COCO_ANGLE_LIST: Tuple[Tuple[int, ...], ...] = (
+    (0, 1, 2),
+    (1, 0, 3),
+    (2, 4, 0),
+    (3, 1),
+    (4, 2),
+    (5, 7, 11),
+    (6, 8, 12),
+    (7, 5, 9),
+    (8, 10, 6),
+    (9, 7),
+    (10, 8),
+    (11, 5, 13),
+    (12, 6, 14),
+    (13, 11, 15),
+    (14, 12, 16),
+    (15, 13),
+    (16, 14),
+)
+
 
 def _seq_name_from_image_name(image_name: str) -> str:
     seq_name = os.path.normpath(image_name).split(os.sep)[0]
@@ -173,6 +203,52 @@ def _select_sequence(
 
 def _vector_sub(a: Sequence[float], b: Sequence[float]) -> List[float]:
     return [float(a[0]) - float(b[0]), float(a[1]) - float(b[1])]
+
+
+def _compute_relative_frames(frames: List[List[List[float]]]) -> np.ndarray:
+    coords = np.asarray(frames, dtype=np.float32)
+    root = coords[:, :1, :]
+    return coords - root
+
+
+def _cos_law(center: np.ndarray, left: np.ndarray, right: np.ndarray) -> np.ndarray:
+    side1 = np.sqrt((center[:, 0] - left[:, 0]) ** 2 + (center[:, 1] - left[:, 1]) ** 2)
+    side2 = np.sqrt((center[:, 0] - right[:, 0]) ** 2 + (center[:, 1] - right[:, 1]) ** 2)
+    side3 = np.sqrt((left[:, 0] - right[:, 0]) ** 2 + (left[:, 1] - right[:, 1]) ** 2)
+    deno = side1 * side2
+    where_zero = deno == 0
+    deno = deno.copy()
+    deno[where_zero] = 1.0
+    cos = (side1 * side1 + side2 * side2 - side3 * side3) / (2 * deno)
+    cos = np.clip(cos, -1.0, 1.0)
+    value = np.pi - np.arccos(cos)
+    value[where_zero] = np.pi
+    return np.nan_to_num(value).astype(np.float32)
+
+
+def _compute_angle_frames(frames: List[List[List[float]]]) -> np.ndarray:
+    coords = np.asarray(frames, dtype=np.float32)
+    if coords.shape[1] != len(COCO_ANGLE_LIST):
+        raise ValueError(
+            f"Angle feature expects {len(COCO_ANGLE_LIST)} joints for coco, "
+            f"but got {coords.shape[1]}."
+        )
+
+    angle = np.zeros((coords.shape[0], coords.shape[1]), dtype=np.float32)
+    for i, angle_def in enumerate(COCO_ANGLE_LIST):
+        if len(angle_def) == 3:
+            center = coords[:, angle_def[0], :]
+            left = coords[:, angle_def[1], :]
+            right = coords[:, angle_def[2], :]
+            angle[:, i] = _cos_law(center, left, right)
+        else:
+            center = coords[:, angle_def[0], :]
+            left = coords[:, angle_def[1], :]
+            right = np.zeros_like(center)
+            right[:, 0] = center[:, 0]
+            right[:, 1] = left[:, 1]
+            angle[:, i] = _cos_law(center, left, right)
+    return angle
 
 
 def _compute_feature_frames(frames: List[List[List[float]]], parent_map: Dict[int, int]) -> List[List[List[float]]]:
@@ -333,10 +409,28 @@ def _circle(x: float, y: float, r: float = 6.5, fill: str = "#2E86AB", opacity: 
     )
 
 
-def _line(x1: float, y1: float, x2: float, y2: float, color: str = "#222222", width: float = 3.5, opacity: float = 0.9) -> str:
+def _line(
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    color: str = "#222222",
+    width: float = 3.5,
+    opacity: float = 0.9,
+    dash: Optional[str] = None,
+) -> str:
+    dash_attr = f' stroke-dasharray="{dash}"' if dash else ""
     return (
         f'<line x1="{_fmt(x1)}" y1="{_fmt(y1)}" x2="{_fmt(x2)}" y2="{_fmt(y2)}" '
-        f'stroke="{color}" stroke-width="{_fmt(width)}" stroke-linecap="round" stroke-opacity="{_fmt(opacity)}" />'
+        f'stroke="{color}" stroke-width="{_fmt(width)}" stroke-linecap="round" stroke-opacity="{_fmt(opacity)}"{dash_attr} />'
+    )
+
+
+def _path(d: str, fill: str = "none", stroke: str = "#222222", width: float = 2.5, opacity: float = 0.9, dash: Optional[str] = None) -> str:
+    dash_attr = f' stroke-dasharray="{dash}"' if dash else ""
+    return (
+        f'<path d="{d}" fill="{fill}" stroke="{stroke}" stroke-width="{_fmt(width)}" '
+        f'stroke-linecap="round" stroke-linejoin="round" stroke-opacity="{_fmt(opacity)}"{dash_attr} />'
     )
 
 
@@ -345,6 +439,32 @@ def _arrow(x1: float, y1: float, x2: float, y2: float, color: str = "#D1495B", w
         f'<line x1="{_fmt(x1)}" y1="{_fmt(y1)}" x2="{_fmt(x2)}" y2="{_fmt(y2)}" '
         f'stroke="{color}" stroke-width="{_fmt(width)}" stroke-linecap="round" stroke-opacity="{_fmt(opacity)}" marker-end="url(#arrow-red)" />',
     ]
+
+
+def _arc_path(center: Tuple[float, float], start: Tuple[float, float], end: Tuple[float, float], radius_scale: float = 0.34) -> str:
+    cx, cy = center
+    sx, sy = start
+    ex, ey = end
+    theta1 = math.atan2(sy - cy, sx - cx)
+    theta2 = math.atan2(ey - cy, ex - cx)
+    r1 = math.hypot(sx - cx, sy - cy)
+    r2 = math.hypot(ex - cx, ey - cy)
+    radius = max(8.0, min(r1, r2) * radius_scale)
+
+    x1 = cx + radius * math.cos(theta1)
+    y1 = cy + radius * math.sin(theta1)
+    x2 = cx + radius * math.cos(theta2)
+    y2 = cy + radius * math.sin(theta2)
+
+    delta = theta2 - theta1
+    while delta <= -math.pi:
+        delta += 2 * math.pi
+    while delta > math.pi:
+        delta -= 2 * math.pi
+
+    large_arc = 1 if abs(delta) > math.pi else 0
+    sweep = 1 if delta > 0 else 0
+    return f"M {_fmt(x1)} {_fmt(y1)} A {_fmt(radius)} {_fmt(radius)} 0 {large_arc} {sweep} {_fmt(x2)} {_fmt(y2)}"
 
 
 def _draw_joints(points: List[List[float]], scores: Optional[List[float]], map_point, color: str, label: bool = True) -> List[str]:
@@ -403,6 +523,86 @@ def _write_svg(path: Path, width: int, height: int, title: str, body: List[str],
     lines.extend(body)
     lines.extend(_svg_footer())
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _save_relative_figure(
+    frame: List[List[float]],
+    output_file: Path,
+    scores: Optional[List[float]] = None,
+    title: str = "Relative feature: J_i to J_0",
+):
+    """Draw solid connections from root joint J_0 to every other joint."""
+    canvas_w, canvas_h = 760, 760
+    box = _panel_box(0, 1, canvas_w, canvas_h)
+    bounds = _plot_limits(frame)
+    map_point = _make_mapper(bounds, box)
+
+    x, y, w, h = box
+    body = [
+        _rect(x, y, w, h),
+        _text(x + w / 2, y + 28, title, size=17),
+    ]
+    root = frame[0]
+    rx, ry = map_point(root)
+    body.append(_circle(rx, ry, r=8.5, fill="#D1495B", opacity=1.0))
+    body.append(_text(rx + 16, ry - 10, "J0", size=11, weight="700", fill="#D1495B", anchor="start"))
+
+    for idx, joint in enumerate(frame):
+        if idx == 0:
+            continue
+        jx, jy = map_point(joint)
+        opacity = 0.95
+        if scores is not None:
+            opacity = max(0.2, min(1.0, float(scores[idx])))
+        body.append(_line(rx, ry, jx, jy, color="#2E86AB", width=2.8, opacity=opacity))
+        body.append(_circle(jx, jy, r=5.5, fill="#2E86AB", opacity=0.95))
+        body.append(_text(jx + 10, jy - 8, str(idx), size=9, weight="600", fill="#152238", anchor="start"))
+
+    _write_svg(output_file, canvas_w, canvas_h, f"{title}", body)
+
+
+def _save_angle_figure(
+    frame: List[List[float]],
+    output_file: Path,
+    scores: Optional[List[float]] = None,
+    title: str = "Angle feature: arc annotations",
+):
+    """Draw dashed angle arcs for the coco angle list from pose_related.py."""
+    canvas_w, canvas_h = 760, 760
+    box = _panel_box(0, 1, canvas_w, canvas_h)
+    bounds = _plot_limits(frame)
+    map_point = _make_mapper(bounds, box)
+
+    x, y, w, h = box
+    body = [
+        _rect(x, y, w, h),
+        _text(x + w / 2, y + 28, title, size=17),
+    ]
+    body.extend(_draw_edges(frame, BONE_TREE_EDGES, scores, map_point, color="#8A8A8A"))
+    body.extend(_draw_joints(frame, scores, map_point, color="#6AAE75", label=False))
+
+    for angle_idx, angle_def in enumerate(COCO_ANGLE_LIST):
+        color = "#F26419"
+        if len(angle_def) == 3:
+            center_idx, left_idx, right_idx = angle_def
+            center = map_point(frame[center_idx])
+            left = map_point(frame[left_idx])
+            right = map_point(frame[right_idx])
+            body.append(_line(center[0], center[1], left[0], left[1], color=color, width=1.7, opacity=0.7, dash="4,4"))
+            body.append(_line(center[0], center[1], right[0], right[1], color=color, width=1.7, opacity=0.7, dash="4,4"))
+            body.append(_path(_arc_path(center, left, right), stroke=color, width=2.3, opacity=0.95, dash="4,4"))
+            body.append(_text(center[0] + 10, center[1] - 10, str(angle_idx), size=9, weight="700", fill=color, anchor="start"))
+        else:
+            center_idx, left_idx = angle_def
+            center = map_point(frame[center_idx])
+            left = map_point(frame[left_idx])
+            vertical = (center[0], left[1])
+            body.append(_line(center[0], center[1], left[0], left[1], color=color, width=1.7, opacity=0.7))
+            body.append(_line(center[0], center[1], vertical[0], vertical[1], color=color, width=1.7, opacity=0.7, dash="4,4"))
+            body.append(_path(_arc_path(center, left, vertical), stroke=color, width=2.3, opacity=0.95, dash="4,4"))
+            body.append(_text(center[0] + 10, center[1] - 10, str(angle_idx), size=9, weight="700", fill=color, anchor="start"))
+
+    _write_svg(output_file, canvas_w, canvas_h, f"{title}", body)
 
 
 def _render_joint_figure(seq_name: str, raw_frames: List[List[List[float]]], raw_scores: List[List[float]], output_file: Path):
@@ -635,6 +835,19 @@ def main():
         tree_edges=KEY_BONE_TREE_EDGES,
     )
 
+    _save_relative_figure(
+        frame0,
+        output_dir / "relative.svg",
+        scores=scores0,
+        title="Relative feature: solid links from J0 to every joint",
+    )
+    _save_angle_figure(
+        frame0,
+        output_dir / "angle.svg",
+        scores=scores0,
+        title="Angle feature",
+    )
+
     for frame_idx in (0, 10, 20, 30, 40):
         _render_frame_figure(
             seq_name,
@@ -644,7 +857,7 @@ def main():
             frame_dir / f"frame_{frame_idx:02d}.svg",
         )
 
-    print("Done. Six SVG figures were written.")
+    print("Done. Feature figures were written.")
     print(f"Extra frame figures were written to: {frame_dir}")
 
 
