@@ -20,6 +20,7 @@ joint_motion_path = '/home/HardDisk/Tai/ProtoGCN/work_dirs/casia_b/jm_new/best_p
 bone_motion_path = '/home/HardDisk/Tai/ProtoGCN/work_dirs/casia_b/bm_new/best_pred.pkl'
 kbone_motion_path = '/home/HardDisk/Tai/ProtoGCN/work_dirs/casia_b/km_new/best_pred.pkl'
 angle_path = '/home/HardDisk/Tai/ProtoGCN/work_dirs/casia_b/a_new/best_pred.pkl'
+relative_path = '/home/HardDisk/Tai/ProtoGCN/work_dirs/casia_b/r_new/best_pred.pkl'
 
 
 def _seq_name_from_image_name(image_name):
@@ -151,6 +152,7 @@ try:
     bone_motion = load(bone_motion_path)
     kbone_motion = load(kbone_motion_path)
     angle = load(angle_path)
+    relative = load(relative_path)
     print("All predictions loaded successfully")
 except FileNotFoundError as e:
     print(f"Error: {e}")
@@ -267,6 +269,15 @@ if label is not None:
 else:
     print('\n[6-Stream] J+B+K+JM+BM+KM - Label file missing, skipping evaluation')
 
+# 7-stream: J+B+K+JM+BM+KM+R
+if label is not None:
+    print('\n[7-Stream] J+B+K+JM+BM+KM+A')
+    fused = comb([joint, bone, kbone, joint_motion, bone_motion, kbone_motion, relative], [1, 1, 1, 1, 1, 1, 1])
+    metrics = report_stream('J+B+K+JM+BM+KM+A', fused)
+    results['7-stream'] = metrics
+else:
+    print('\n[7-Stream] J+B+K+JM+BM+KM+A - Label file missing, skipping evaluation')
+
 # 7-stream: J+B+K+JM+BM+KM+A 
 if label is not None:
     print('\n[7-Stream] J+B+K+JM+BM+KM+A')
@@ -275,6 +286,15 @@ if label is not None:
     results['7-stream'] = metrics
 else:
     print('\n[7-Stream] J+B+K+JM+BM+KM+A - Label file missing, skipping evaluation')
+
+# 8-stream: J+B+K+JM+BM+KM+A+R
+if label is not None:
+    print('\n[8-Stream] J+B+K+JM+BM+KM+A+R')
+    fused = comb([joint, bone, kbone, joint_motion, bone_motion, kbone_motion, angle, relative], [1, 1, 1, 1, 1, 1, 1, 1])
+    metrics = report_stream('J+B+K+JM+BM+KM+A+R', fused)
+    results['8-stream'] = metrics
+else:
+    print('\n[8-Stream] J+B+K+JM+BM+KM+A+R - Label file missing, skipping evaluation')
 
 
 # Save ensemble results
