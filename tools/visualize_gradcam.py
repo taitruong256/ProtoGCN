@@ -26,8 +26,8 @@ def _latest_checkpoint(work_dir):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Visualize gait Grad-CAM as GIFs")
-    parser.add_argument("--config", default='/home/taitruong256/taitruong/CCU/GaitXplain/docs/ProtoGCN_gait/work_dirs/casia_b/checkpoints_casia_b/b/b.py', help="Path to config file")
-    parser.add_argument("--checkpoint", default='/home/taitruong256/taitruong/CCU/GaitXplain/docs/ProtoGCN_gait/work_dirs/casia_b/checkpoints_casia_b/b/best_gait_contrastive_loss_epoch_144.pth', help="Path to checkpoint; defaults to latest .pth in work_dir")
+    parser.add_argument("--config", default='/home/taitruong256/taitruong/CCU/GaitXplain/docs/ProtoGCN_gait/work_dirs/casia_b/checkpoints_casia_b/j_3/j_2.py', help="Path to config file")
+    parser.add_argument("--checkpoint", default='/home/taitruong256/taitruong/CCU/GaitXplain/docs/ProtoGCN_gait/work_dirs/casia_b/checkpoints_casia_b/j_3/best_gait_contrastive_loss_epoch_144.pth', help="Path to checkpoint; defaults to latest .pth in work_dir")
     parser.add_argument("--output-dir", default='data/output/', help="Directory to save PNG/GIF outputs")
     parser.add_argument("--device", default="cuda:0", help="Torch device, e.g. cuda:0 or cpu")
     parser.add_argument("--split", default="test", choices=["train", "val", "test"], help="Dataset split to visualize")
