@@ -21,6 +21,9 @@ train_ann_file = 'data/casia-b/casia-b_pose_train.csv'
 val_ann_file = 'data/casia-b/casia-b_pose_valid.csv'
 test_ann_file = 'data/casia-b/casia-b_pose_test.csv'
 train_pipeline = [
+    dict(type='HumanOrientedAffine', fi=0.0),
+    dict(type='HumanOrientedRescale', scale=225),
+    dict(type='HumanOrientedAlignment'),
     dict(type='RandomRot', theta=0.2),
     dict(type='GenSkeFeat', dataset=graph, feats=[modality]),
     dict(type='UniformSampleDecode', clip_len=100),
@@ -29,6 +32,9 @@ train_pipeline = [
     dict(type='ToTensor', keys=['keypoint'])
 ]
 val_pipeline = [
+    dict(type='HumanOrientedAffine', fi=0.0),
+    dict(type='HumanOrientedRescale', scale=225),
+    dict(type='HumanOrientedAlignment'),
     dict(type='GenSkeFeat', dataset=graph, feats=[modality]),
     dict(type='UniformSampleDecode', clip_len=100, num_clips=1),
     dict(type='FormatGCNInput', num_person=1),
@@ -36,6 +42,9 @@ val_pipeline = [
     dict(type='ToTensor', keys=['keypoint'])
 ]
 test_pipeline = [
+    dict(type='HumanOrientedAffine', fi=0.0),
+    dict(type='HumanOrientedRescale', scale=225),
+    dict(type='HumanOrientedAlignment'),
     dict(type='GenSkeFeat', dataset=graph, feats=[modality]),
     dict(type='UniformSampleDecode', clip_len=100, num_clips=10),
     dict(type='FormatGCNInput', num_person=1),

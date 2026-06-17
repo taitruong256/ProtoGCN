@@ -183,6 +183,156 @@ class RandomRot:
 
 
 @PIPELINES.register_module()
+class HumanOrientedAffine:
+    """Apply the GPGait affine normalization to make the spine vertical.
+
+    This follows the affine step of the HOT module in GPGait:
+    the neck is used as the rotation center, and the skeleton is rotated
+    so that the hip-to-neck spine becomes close to vertical.
+
+    Args:
+        fi (float): Angular threshold in radians. If ``abs(theta) <= fi``,
+            the frame is kept unchanged. Default: 0.0.
+    """
+
+    def __init__(self, fi=0.0):
+        self.fi = fi
+
+    @staticmethod
+    def _rotate_2d(points, center, theta):
+        cos_t = np.cos(theta)
+        sin_t = np.sin(theta)
+        cx, cy = center
+        x = points[..., 0]
+        y = points[..., 1]
+        new_x = cos_t * x - sin_t * y + (1.0 - cos_t) * cx + sin_t * cy
+        new_y = sin_t * x + cos_t * y + (1.0 - cos_t) * cy - sin_t * cx
+        return np.stack([new_x, new_y], axis=-1)
+
+    def __call__(self, results):
+        skeleton = results['keypoint']
+        if skeleton.ndim != 4:
+            raise ValueError(f'HumanOrientedAffine expects keypoint with shape (M, T, V, C), but got {skeleton.shape}.')
+
+        if np.all(np.isclose(skeleton[..., :2], 0)):
+            return results
+
+        coords = skeleton[..., :2].astype(np.float32, copy=True)
+        M, T, V, _ = coords.shape
+        if V <= 12:
+            raise ValueError(
+                f'HumanOrientedAffine expects at least 13 joints so that '
+                f'neck/hip indices (5, 6, 11, 12) are valid, but got V={V}.'
+            )
+
+        neck = (coords[:, :, 5] + coords[:, :, 6]) / 2.0
+        hip = (coords[:, :, 11] + coords[:, :, 12]) / 2.0
+
+        dx = hip[..., 0] - neck[..., 0]
+        dy = hip[..., 1] - neck[..., 1]
+
+        theta = np.arctan2(dx, dy)
+        valid = np.abs(theta) > self.fi
+
+        for m in range(M):
+            for t in range(T):
+                if not valid[m, t]:
+                    continue
+                coords[m, t] = self._rotate_2d(coords[m, t], neck[m, t], theta[m, t])
+
+        skeleton = skeleton.copy()
+        skeleton[..., :2] = coords
+        results['keypoint'] = skeleton
+        return results
+
+    def __repr__(self):
+        return f'{self.__class__.__name__}(fi={self.fi})'
+
+
+@PIPELINES.register_module()
+class HumanOrientedRescale:
+    """Rescale each frame to a uniform body height.
+
+    This matches the HOT body-rescale step in GPGait. The vertical extent
+    is estimated from valid joints only, then all coordinates are scaled
+    by ``scale / body_height``.
+
+    Args:
+        scale (float): Target body height after rescaling. Default: 225.
+    """
+
+    def __init__(self, scale=225):
+        self.scale = scale
+
+    def __call__(self, results):
+        skeleton = results['keypoint']
+        if skeleton.ndim != 4:
+            raise ValueError(f'HumanOrientedRescale expects keypoint with shape (M, T, V, C), but got {skeleton.shape}.')
+
+        coords = skeleton[..., :2].astype(np.float32, copy=True)
+        M, T, V, _ = coords.shape
+
+        for m in range(M):
+            for t in range(T):
+                frame = coords[m, t]
+                joint_mask = ~np.all(np.isclose(frame, 0.0), axis=-1)
+                if not np.any(joint_mask):
+                    continue
+
+                valid_y = frame[joint_mask, 1]
+                old_h = valid_y.max() - valid_y.min()
+                if np.isclose(old_h, 0.0):
+                    continue
+
+                projection = self.scale / old_h
+                coords[m, t] = frame * projection
+
+        skeleton = skeleton.copy()
+        skeleton[..., :2] = coords
+        results['keypoint'] = skeleton
+        return results
+
+    def __repr__(self):
+        return f'{self.__class__.__name__}(scale={self.scale})'
+
+
+@PIPELINES.register_module()
+class HumanOrientedAlignment:
+    """Translate each frame so that the neck becomes the origin.
+
+    This matches the HOT alignment step in GPGait. The midpoint of the
+    left/right shoulders is treated as the neck, and all joints are shifted
+    by subtracting that center.
+    """
+
+    def __init__(self):
+        pass
+
+    def __call__(self, results):
+        skeleton = results['keypoint']
+        if skeleton.ndim != 4:
+            raise ValueError(f'HumanOrientedAlignment expects keypoint with shape (M, T, V, C), but got {skeleton.shape}.')
+
+        coords = skeleton[..., :2].astype(np.float32, copy=True)
+        if coords.shape[2] <= 6:
+            raise ValueError(
+                f'HumanOrientedAlignment expects at least 7 joints so that '
+                f'neck indices (5, 6) are valid, but got V={coords.shape[2]}.'
+            )
+
+        neck = (coords[:, :, 5] + coords[:, :, 6]) / 2.0
+        coords = coords - neck[:, :, None, :]
+
+        skeleton = skeleton.copy()
+        skeleton[..., :2] = coords
+        results['keypoint'] = skeleton
+        return results
+
+    def __repr__(self):
+        return f'{self.__class__.__name__}()'
+
+
+@PIPELINES.register_module()
 class Spatial_Flip:
     """Flip the skeleton. """
     
