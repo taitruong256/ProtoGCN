@@ -16,6 +16,8 @@ class unit_gcn(nn.Module):
                  ratio=0.125,
                  intra_act='softmax',
                  inter_act='tanh',
+                 use_euclid=True,
+                 euclid_scale=1.0,
                  norm='BN',
                  act='ReLU'):
         super().__init__()
@@ -34,6 +36,8 @@ class unit_gcn(nn.Module):
         self.act = build_activation_layer(self.act_cfg)
         self.intra_act = intra_act
         self.inter_act = inter_act
+        self.use_euclid = use_euclid
+        self.euclid_scale = nn.Parameter(torch.tensor(float(euclid_scale)))
 
         self.A = nn.Parameter(A.clone())
         self.pre = nn.Sequential(
@@ -83,6 +87,15 @@ class unit_gcn(nn.Module):
         A_view = torch.einsum('nv,vkxy->nkxy', view_prob, self.view_mats)
         A_view = A_view[:, :, None, None]
         A = (A + A_view) / 2 
+
+        euclid_graph = None
+        if self.use_euclid:
+            # Build a joint-to-joint distance matrix from the current features.
+            joint_feat = x.mean(dim=2).transpose(1, 2).contiguous()  # N V C
+            euclid_dist = torch.cdist(joint_feat, joint_feat, p=2)   # N V V
+            euclid_graph = (-self.euclid_scale * euclid_dist)[:, None, None, None, :, :]
+            euclid_graph = euclid_graph.expand(-1, self.num_subsets, -1, -1, -1, -1)
+            A = A + euclid_graph
         
         """
         ***********************************
@@ -130,6 +143,8 @@ class unit_gcn(nn.Module):
         """
         
         get_gcl_graph = graph_list[0] + graph_list[1]
+        if euclid_graph is not None:
+            get_gcl_graph = get_gcl_graph + euclid_graph
         # N K C 1 V V -> N K C V V
         get_gcl_graph = get_gcl_graph.squeeze(3)
         # N K C V V -> N K*C V V
