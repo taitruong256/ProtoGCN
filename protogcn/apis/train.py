@@ -46,7 +46,6 @@ def init_random_seed(seed=None, device='cuda'):
 
 class DistPrefixEvalHook(Hook):
     """Run distributed evaluation after each epoch and log with a prefix."""
-    priority = 'HIGH'
 
     def __init__(self, dataset, dataloader, eval_cfg=None, prefix='train', tmpdir=None):
         self.dataset = dataset
