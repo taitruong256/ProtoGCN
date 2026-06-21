@@ -25,7 +25,7 @@ class GCN_Block(nn.Module):
 
     def __init__(self, in_channels, out_channels, A, stride=1, residual=True, **kwargs):
         super().__init__()
-        common_args = ['act', 'norm', 'g1x1']
+        common_args = ['act', 'norm', 'g1x1', 'use_view']
         for arg in common_args:
             if arg in kwargs:
                 value = kwargs.pop(arg)
