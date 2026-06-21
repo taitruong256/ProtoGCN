@@ -54,7 +54,6 @@ def _ensure_splits() -> None:
 def _make_fold_config(base_config: Path, fold: int, tmp_dir: Path) -> Path:
     text = base_config.read_text()
     text = re.sub(r"^fold\s*=\s*\d+\s*$", f"fold = {fold}", text, flags=re.MULTILINE)
-    text = re.sub(r"^exp_version\s*=\s*.*$", "exp_version = 'ver0'", text, flags=re.MULTILINE)
     text = re.sub(r"^work_dir\s*=\s*.*$", "work_dir = f'./work_dirs/remap/{exp_version}/fold_{fold}'", text, flags=re.MULTILINE)
 
     out_path = tmp_dir / f"remap_fold_{fold}.py"

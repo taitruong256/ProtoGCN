@@ -72,7 +72,7 @@ def _balanced_weights(counts, power=1.0, normalize_mean=True):
     return weights.astype(np.float32)
 
 
-def _evaluate_predictions(video_infos, results, num_classes, metrics=None, logger=None, split_name=None):
+def _evaluate_predictions(video_infos, results, num_classes, metrics=None, logger=None, split_name=None, return_confusion_matrix=False):
     if not isinstance(results, list):
         raise TypeError(f'results must be a list, but got {type(results)}')
     assert len(results) == len(video_infos), (
@@ -130,6 +130,8 @@ def _evaluate_predictions(video_infos, results, num_classes, metrics=None, logge
         for row_idx, row in enumerate(cm):
             print_log(f'class_{row_idx}: {row.tolist()}', logger=logger)
 
+    if return_confusion_matrix:
+        return eval_results, cm
     return eval_results
 
 
@@ -148,6 +150,7 @@ class RemapSitToStandDataset(BaseDataset):
                  skeleton_dir=None,
                  label_file=None,
                  label_col=LABEL_COL,
+                 use_keypoint_score=False,
                  use_class_weight=False,
                  use_class_sampling=False,
                  class_weight_power=1.0,
@@ -157,6 +160,7 @@ class RemapSitToStandDataset(BaseDataset):
         self.skeleton_dir = Path(skeleton_dir) if skeleton_dir is not None else None
         self.label_file = Path(label_file) if label_file is not None else _default_label_workbook()
         self.label_col = label_col
+        self.use_keypoint_score = use_keypoint_score
         self.use_class_weight = use_class_weight
         self.use_class_sampling = use_class_sampling
         self.class_weight_power = class_weight_power
@@ -201,7 +205,7 @@ class RemapSitToStandDataset(BaseDataset):
             if keypoint.shape[1] < self.min_frames:
                 continue
 
-            data.append(dict(
+            sample = dict(
                 frame_dir=frame_dir,
                 total_frames=int(keypoint.shape[1]),
                 label=int(float(label)),
@@ -211,8 +215,10 @@ class RemapSitToStandDataset(BaseDataset):
                 transition_id=str(row.get('transition_id', row.get('Transition ID', ''))),
                 file=csv_name,
                 keypoint=keypoint,
-                keypoint_score=keypoint_score,
-            ))
+            )
+            if self.use_keypoint_score:
+                sample['keypoint_score'] = keypoint_score
+            data.append(sample)
         return data
 
     def _load_from_workbook(self):
@@ -242,7 +248,7 @@ class RemapSitToStandDataset(BaseDataset):
             participant = int(row['Participant ID number'])
             cohort = str(row['PD_or_C']).strip()
             transition_id = int(row['Transition ID'])
-            data.append(dict(
+            sample = dict(
                 frame_dir=frame_dir,
                 total_frames=int(keypoint.shape[1]),
                 label=int(label),
@@ -252,8 +258,10 @@ class RemapSitToStandDataset(BaseDataset):
                 transition_id=str(transition_id),
                 file=csv_name,
                 keypoint=keypoint,
-                keypoint_score=keypoint_score,
-            ))
+            )
+            if self.use_keypoint_score:
+                sample['keypoint_score'] = keypoint_score
+            data.append(sample)
         return data
 
     def load_annotations(self):
@@ -262,7 +270,7 @@ class RemapSitToStandDataset(BaseDataset):
             return self._load_from_split_csv()
         return self._load_from_workbook()
 
-    def evaluate(self, results, metrics=None, logger=None, split_name=None, **deprecated_kwargs):
+    def evaluate(self, results, metrics=None, logger=None, split_name=None, return_confusion_matrix=False, **deprecated_kwargs):
         return _evaluate_predictions(
             self.video_infos,
             results,
@@ -270,4 +278,5 @@ class RemapSitToStandDataset(BaseDataset):
             metrics=metrics,
             logger=logger,
             split_name=split_name,
+            return_confusion_matrix=return_confusion_matrix,
         )

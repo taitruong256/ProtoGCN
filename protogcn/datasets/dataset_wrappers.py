@@ -80,7 +80,7 @@ class ConcatDataset:
         """Length after repetition."""
         return sum(self.lens)
 
-    def evaluate(self, results, metrics=None, logger=None, **kwargs):
+    def evaluate(self, results, metrics=None, logger=None, return_confusion_matrix=False, **kwargs):
         from .remap_dataset import _evaluate_predictions
 
         return _evaluate_predictions(
@@ -89,5 +89,6 @@ class ConcatDataset:
             self.num_classes,
             metrics=metrics,
             logger=logger,
+            return_confusion_matrix=return_confusion_matrix,
             **kwargs,
         )

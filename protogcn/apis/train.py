@@ -1,6 +1,7 @@
 import numpy as np
 import os
 import os.path as osp
+import json
 import time
 import torch
 import torch.distributed as dist
@@ -45,6 +46,7 @@ def init_random_seed(seed=None, device='cuda'):
 
 class DistPrefixEvalHook(Hook):
     """Run distributed evaluation after each epoch and log with a prefix."""
+    priority = 'HIGH'
 
     def __init__(self, dataset, dataloader, eval_cfg=None, prefix='train', tmpdir=None):
         self.dataset = dataset
@@ -67,10 +69,23 @@ class DistPrefixEvalHook(Hook):
             eval_cfg.pop(key, None)
 
         eval_cfg.setdefault('split_name', self.prefix)
-        eval_res = self.dataset.evaluate(outputs, **eval_cfg)
+        eval_res, cm = self.dataset.evaluate(
+            outputs,
+            logger=runner.logger,
+            return_confusion_matrix=True,
+            **eval_cfg)
         runner.logger.info(f'{self.prefix} results at epoch {runner.epoch + 1}')
         for metric_name, val in eval_res.items():
             runner.logger.info(f'{self.prefix}_{metric_name}: {val:.04f}')
+        if cm is not None:
+            cm_text = _format_confusion_matrix(cm, self.prefix)
+            runner.logger.info(cm_text)
+            _append_text_log(runner.logger, cm_text)
+
+        if hasattr(runner, 'log_buffer'):
+            for metric_name, val in eval_res.items():
+                runner.log_buffer.output[f'{self.prefix}_{metric_name}'] = float(val)
+            runner.log_buffer.ready = True
 
 
 def _build_prefixed_eval_hook(cfg, split_cfg, prefix, default_eval_cfg_key, dataloader_cfg_key):
@@ -95,6 +110,33 @@ def _build_prefixed_eval_hook(cfg, split_cfg, prefix, default_eval_cfg_key, data
         prefix=prefix,
         tmpdir=tmpdir)
     return split_dataset, hook
+
+
+def _append_json_log(log_path, record):
+    try:
+        with open(log_path, 'a') as f:
+            f.write(json.dumps(record, ensure_ascii=False) + '\n')
+    except Exception:
+        pass
+
+
+def _append_text_log(logger, text):
+    try:
+        for handler in getattr(logger, 'handlers', []):
+            log_path = getattr(handler, 'baseFilename', None)
+            if log_path:
+                with open(log_path, 'a') as f:
+                    f.write(text + '\n')
+    except Exception:
+        pass
+
+
+def _format_confusion_matrix(cm, split_name):
+    lines = [f'{split_name} confusion_matrix (rows=gt, cols=pred):']
+    for row_idx, row in enumerate(cm):
+        row_str = ' '.join(f'{int(x):4d}' for x in row.tolist())
+        lines.append(f'class_{row_idx}: {row_str}')
+    return '\n'.join(lines)
 
 
 def _apply_class_weight_if_needed(model, train_dataset, cfg, logger):
@@ -215,7 +257,7 @@ def train_model(model,
         _, train_eval_hook = _build_prefixed_eval_hook(
             cfg,
             cfg.data.train_eval,
-            prefix='train',
+            prefix='valid',
             default_eval_cfg_key='train_evaluation',
             dataloader_cfg_key='train_eval_dataloader')
         runner.register_hook(train_eval_hook)
@@ -306,7 +348,20 @@ def train_model(model,
                     eval_cfg.pop(key, None)
                 eval_cfg.setdefault('split_name', name)
 
-                eval_res = test_dataset.evaluate(outputs, **eval_cfg)
+                eval_res, cm = test_dataset.evaluate(
+                    outputs,
+                    logger=logger,
+                    return_confusion_matrix=True,
+                    **eval_cfg)
                 logger.info(f'Testing results of the {name} checkpoint')
                 for metric_name, val in eval_res.items():
                     logger.info(f'{metric_name}: {val:.04f}')
+                if cm is not None:
+                    cm_text = _format_confusion_matrix(cm, name)
+                    logger.info(cm_text)
+                    _append_text_log(logger, cm_text)
+                json_log = osp.join(cfg.work_dir, f'{timestamp}.log.json')
+                record = {'mode': name, 'epoch': int(cfg.total_epochs)}
+                for metric_name, val in eval_res.items():
+                    record[f'{name}_{metric_name}'] = float(val)
+                _append_json_log(json_log, record)

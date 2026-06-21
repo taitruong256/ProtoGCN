@@ -3,8 +3,8 @@ graph = 'openpose25'
 num_classes = 4
 fold = 0
 exp_version = 'ver0'
-use_class_weight = True
-use_class_sampling = True
+use_class_weight = False 
+use_class_sampling = False 
 class_weight_power = 1.0
 class_sampling_power = 0.5
 
@@ -22,6 +22,7 @@ def _dataset_cfg(split, fold_id, pipeline=None):
         pipeline=pipeline or (train_pipeline if split == 'train' else (val_pipeline if split == 'val' else test_pipeline)),
         label_file=f'{data_root}/Data/STS_human_labels/SitToStand_human_labels.xls',
         num_classes=num_classes,
+        use_keypoint_score=False,
         use_class_weight=use_class_weight and split == 'train',
         use_class_sampling=use_class_sampling and split == 'train',
         class_weight_power=class_weight_power,
@@ -33,7 +34,7 @@ model = dict(
     type='RecognizerGCN',
     backbone=dict(
         type='ProtoGCN',
-        in_channels=3,
+        in_channels=2,
         num_person=1,
         base_channels=32,
         num_prototype=200,
