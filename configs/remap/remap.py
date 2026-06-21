@@ -2,9 +2,13 @@ modality = 'j'
 graph = 'openpose25'
 num_classes = 4
 fold = 0
-train_folds = [i for i in range(5) if i != fold]
+exp_version = 'ver0'
+use_class_weight = True
+use_class_sampling = True
+class_weight_power = 1.0
+class_sampling_power = 0.5
 
-work_dir = f'./work_dirs/remap/fold_{fold}'
+work_dir = f'./work_dirs/remap/{exp_version}/fold_{fold}'
 data_root = 'data/REMAP/SitToStand'
 skeleton_dir = f'{data_root}/Data/STS_2D_skeletons_coarsened'
 split_dir = f'{data_root}/splits'
@@ -18,6 +22,10 @@ def _dataset_cfg(split, fold_id, pipeline=None):
         pipeline=pipeline or (train_pipeline if split == 'train' else (val_pipeline if split == 'val' else test_pipeline)),
         label_file=f'{data_root}/Data/STS_human_labels/SitToStand_human_labels.xls',
         num_classes=num_classes,
+        use_class_weight=use_class_weight and split == 'train',
+        use_class_sampling=use_class_sampling and split == 'train',
+        class_weight_power=class_weight_power,
+        class_sampling_power=class_sampling_power,
     )
 
 
@@ -73,14 +81,8 @@ data = dict(
     test_dataloader=dict(videos_per_gpu=1),
     train_eval_dataloader=dict(videos_per_gpu=1),
     test_eval_dataloader=dict(videos_per_gpu=1),
-    train=dict(
-        type='ConcatDataset',
-        datasets=[_dataset_cfg('train', i) for i in train_folds],
-    ),
-    train_eval=dict(
-        type='ConcatDataset',
-        datasets=[_dataset_cfg('train', i, pipeline=val_pipeline) for i in train_folds],
-    ),
+    train=_dataset_cfg('train', fold),
+    train_eval=_dataset_cfg('train', fold, pipeline=val_pipeline),
     val=_dataset_cfg('test', fold),
     test_eval=_dataset_cfg('test', fold, pipeline=val_pipeline),
     test=_dataset_cfg('test', fold),
@@ -88,7 +90,7 @@ data = dict(
 
 optimizer = dict(type='SGD', lr=0.025, momentum=0.9, weight_decay=0.0005, nesterov=True)
 optimizer_config = dict(grad_clip=None)
-lr_config = dict(policy='CosineAnnealing', min_lr=0, by_epoch=False)
+lr_config = dict(policy='CosineAnnealing', min_lr=1e-4, by_epoch=True)
 total_epochs = 10
 checkpoint_config = dict(interval=1, max_keep_ckpts=1, save_last=True)
 evaluation = dict(

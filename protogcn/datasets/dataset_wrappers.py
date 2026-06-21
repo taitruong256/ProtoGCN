@@ -60,6 +60,15 @@ class ConcatDataset:
         self.datasets = datasets
         self.lens = [len(x) for x in self.datasets]
         self.cumsum = np.cumsum(self.lens)
+        self.video_infos = []
+        for dataset in self.datasets:
+            if hasattr(dataset, 'video_infos'):
+                self.video_infos.extend(dataset.video_infos)
+        self.num_classes = next(
+            (getattr(dataset, 'num_classes', None) for dataset in self.datasets
+             if getattr(dataset, 'num_classes', None) is not None),
+            None,
+        )
 
     def __getitem__(self, idx):
         """Get data."""
@@ -70,3 +79,15 @@ class ConcatDataset:
     def __len__(self):
         """Length after repetition."""
         return sum(self.lens)
+
+    def evaluate(self, results, metrics=None, logger=None, **kwargs):
+        from .remap_dataset import _evaluate_predictions
+
+        return _evaluate_predictions(
+            self.video_infos,
+            results,
+            self.num_classes,
+            metrics=metrics,
+            logger=logger,
+            **kwargs,
+        )

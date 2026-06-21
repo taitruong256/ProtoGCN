@@ -57,6 +57,82 @@ def _read_split_csv(path):
     return rows
 
 
+def _balanced_weights(counts, power=1.0, normalize_mean=True):
+    counts = np.asarray(counts, dtype=np.float32)
+    valid = counts > 0
+    if not np.any(valid):
+        return np.zeros_like(counts, dtype=np.float32)
+    max_count = counts[valid].max()
+    weights = np.zeros_like(counts, dtype=np.float32)
+    weights[valid] = (max_count / counts[valid]) ** power
+    if normalize_mean:
+        mean_val = weights[valid].mean()
+        if mean_val > 0:
+            weights[valid] /= mean_val
+    return weights.astype(np.float32)
+
+
+def _evaluate_predictions(video_infos, results, num_classes, metrics=None, logger=None, split_name=None):
+    if not isinstance(results, list):
+        raise TypeError(f'results must be a list, but got {type(results)}')
+    assert len(results) == len(video_infos), (
+        f'The length of results is not equal to the dataset len: '
+        f'{len(results)} != {len(video_infos)}')
+
+    metrics = metrics if metrics is not None else ['accuracy', 'precision', 'recall', 'f1_score', 'confusion_matrix']
+    metrics = metrics if isinstance(metrics, (list, tuple)) else [metrics]
+    allowed_metrics = ['accuracy', 'precision', 'recall', 'f1_score', 'confusion_matrix']
+    for metric in metrics:
+        if metric not in allowed_metrics:
+            raise KeyError(f'metric {metric} is not supported')
+
+    if len(results) > 0 and isinstance(results[0], (tuple, list)):
+        scores = np.stack([np.asarray(result[0], dtype=np.float32) for result in results])
+    else:
+        scores = np.stack([np.asarray(result, dtype=np.float32) for result in results])
+
+    labels = np.asarray([ann['label'] for ann in video_infos], dtype=np.int64)
+    pred = scores.argmax(axis=1)
+    num_classes = int(num_classes or max(labels.max(), pred.max()) + 1)
+    cm = np.zeros((num_classes, num_classes), dtype=np.int64)
+    for gt, pr in zip(labels, pred):
+        cm[int(gt), int(pr)] += 1
+
+    tp = np.diag(cm).astype(np.float32)
+    fp = cm.sum(axis=0).astype(np.float32) - tp
+    fn = cm.sum(axis=1).astype(np.float32) - tp
+    precision_per_class = np.divide(tp, tp + fp, out=np.zeros_like(tp), where=(tp + fp) > 0)
+    recall_per_class = np.divide(tp, tp + fn, out=np.zeros_like(tp), where=(tp + fn) > 0)
+    f1_per_class = np.divide(
+        2 * precision_per_class * recall_per_class,
+        precision_per_class + recall_per_class,
+        out=np.zeros_like(tp),
+        where=(precision_per_class + recall_per_class) > 0,
+    )
+
+    eval_results = OrderedDict()
+    if 'accuracy' in metrics:
+        eval_results['accuracy'] = float((pred == labels).mean())
+    if 'precision' in metrics:
+        eval_results['precision'] = float(precision_per_class.mean())
+    if 'recall' in metrics:
+        eval_results['recall'] = float(recall_per_class.mean())
+    if 'f1_score' in metrics:
+        eval_results['f1_score'] = float(f1_per_class.mean())
+
+    split_suffix = f' [{split_name}]' if split_name else ''
+    log_prefix = f'\nEvaluating REMAP severity classification{split_suffix} ...'
+    print_log(log_prefix, logger=logger)
+    for key, value in eval_results.items():
+        print_log(f'{key}\t{value:.4f}', logger=logger)
+    if 'confusion_matrix' in metrics:
+        print_log('confusion_matrix (rows=gt, cols=pred):', logger=logger)
+        for row_idx, row in enumerate(cm):
+            print_log(f'class_{row_idx}: {row.tolist()}', logger=logger)
+
+    return eval_results
+
+
 @DATASETS.register_module()
 class RemapSitToStandDataset(BaseDataset):
     """REMAP Sit-to-Stand skeleton dataset.
@@ -72,13 +148,36 @@ class RemapSitToStandDataset(BaseDataset):
                  skeleton_dir=None,
                  label_file=None,
                  label_col=LABEL_COL,
+                 use_class_weight=False,
+                 use_class_sampling=False,
+                 class_weight_power=1.0,
+                 class_sampling_power=0.5,
                  min_frames=1,
                  **kwargs):
         self.skeleton_dir = Path(skeleton_dir) if skeleton_dir is not None else None
         self.label_file = Path(label_file) if label_file is not None else _default_label_workbook()
         self.label_col = label_col
+        self.use_class_weight = use_class_weight
+        self.use_class_sampling = use_class_sampling
+        self.class_weight_power = class_weight_power
+        self.class_sampling_power = class_sampling_power
         self.min_frames = min_frames
         super().__init__(ann_file, pipeline, start_index=0, modality='Pose', **kwargs)
+
+        labels = np.asarray([x['label'] for x in self.video_infos], dtype=np.int64)
+        if self.num_classes is None:
+            self.num_classes = int(labels.max()) + 1 if len(labels) > 0 else 0
+        counts = np.bincount(labels, minlength=self.num_classes).astype(np.float32) if len(labels) > 0 else np.zeros(self.num_classes, dtype=np.float32)
+        if self.test_mode:
+            self.class_weight = None
+            self.class_prob = None
+        else:
+            self.class_weight = None
+            self.class_prob = None
+            if self.use_class_weight:
+                self.class_weight = _balanced_weights(counts, power=self.class_weight_power, normalize_mean=True).tolist()
+            if self.use_class_sampling:
+                self.class_prob = _balanced_weights(counts, power=self.class_sampling_power, normalize_mean=False).tolist()
 
         logger = get_root_logger()
         logger.info(f'{len(self)} REMAP SitToStand sequences loaded')
@@ -164,61 +263,11 @@ class RemapSitToStandDataset(BaseDataset):
         return self._load_from_workbook()
 
     def evaluate(self, results, metrics=None, logger=None, split_name=None, **deprecated_kwargs):
-        if not isinstance(results, list):
-            raise TypeError(f'results must be a list, but got {type(results)}')
-        assert len(results) == len(self), (
-            f'The length of results is not equal to the dataset len: '
-            f'{len(results)} != {len(self)}')
-
-        metrics = metrics if metrics is not None else ['accuracy', 'precision', 'recall', 'f1_score', 'confusion_matrix']
-        metrics = metrics if isinstance(metrics, (list, tuple)) else [metrics]
-        allowed_metrics = ['accuracy', 'precision', 'recall', 'f1_score', 'confusion_matrix']
-        for metric in metrics:
-            if metric not in allowed_metrics:
-                raise KeyError(f'metric {metric} is not supported')
-
-        if len(results) > 0 and isinstance(results[0], (tuple, list)):
-            scores = np.stack([np.asarray(result[0], dtype=np.float32) for result in results])
-        else:
-            scores = np.stack([np.asarray(result, dtype=np.float32) for result in results])
-
-        labels = np.asarray([ann['label'] for ann in self.video_infos], dtype=np.int64)
-        pred = scores.argmax(axis=1)
-        num_classes = int(self.num_classes or max(labels.max(), pred.max()) + 1)
-        cm = np.zeros((num_classes, num_classes), dtype=np.int64)
-        for gt, pr in zip(labels, pred):
-            cm[int(gt), int(pr)] += 1
-
-        tp = np.diag(cm).astype(np.float32)
-        fp = cm.sum(axis=0).astype(np.float32) - tp
-        fn = cm.sum(axis=1).astype(np.float32) - tp
-        precision_per_class = np.divide(tp, tp + fp, out=np.zeros_like(tp), where=(tp + fp) > 0)
-        recall_per_class = np.divide(tp, tp + fn, out=np.zeros_like(tp), where=(tp + fn) > 0)
-        f1_per_class = np.divide(
-            2 * precision_per_class * recall_per_class,
-            precision_per_class + recall_per_class,
-            out=np.zeros_like(tp),
-            where=(precision_per_class + recall_per_class) > 0,
+        return _evaluate_predictions(
+            self.video_infos,
+            results,
+            self.num_classes,
+            metrics=metrics,
+            logger=logger,
+            split_name=split_name,
         )
-
-        eval_results = OrderedDict()
-        if 'accuracy' in metrics:
-            eval_results['accuracy'] = float((pred == labels).mean())
-        if 'precision' in metrics:
-            eval_results['precision'] = float(precision_per_class.mean())
-        if 'recall' in metrics:
-            eval_results['recall'] = float(recall_per_class.mean())
-        if 'f1_score' in metrics:
-            eval_results['f1_score'] = float(f1_per_class.mean())
-
-        split_suffix = f' [{split_name}]' if split_name else ''
-        log_prefix = f'\nEvaluating REMAP severity classification{split_suffix} ...'
-        print_log(log_prefix, logger=logger)
-        for key, value in eval_results.items():
-            print_log(f'{key}\t{value:.4f}', logger=logger)
-        if 'confusion_matrix' in metrics:
-            print_log('confusion_matrix (rows=gt, cols=pred):', logger=logger)
-            for row_idx, row in enumerate(cm):
-                print_log(f'class_{row_idx}: {row.tolist()}', logger=logger)
-
-        return eval_results

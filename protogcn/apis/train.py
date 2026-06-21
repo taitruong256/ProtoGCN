@@ -97,6 +97,26 @@ def _build_prefixed_eval_hook(cfg, split_cfg, prefix, default_eval_cfg_key, data
     return split_dataset, hook
 
 
+def _apply_class_weight_if_needed(model, train_dataset, cfg, logger):
+    if not cfg.get('use_class_weight', False):
+        return
+    class_weight = getattr(train_dataset, 'class_weight', None)
+    if class_weight is None:
+        logger.info('Class weight is enabled, but train dataset did not provide class_weight.')
+        return
+
+    try:
+        target = model.module if hasattr(model, 'module') else model
+        loss_obj = target.cls_head.loss_cls
+        if hasattr(loss_obj, 'class_weight'):
+            loss_obj.class_weight = torch.tensor(class_weight, dtype=torch.float32)
+            logger.info(f'Applied class_weight to loss: {class_weight}')
+        else:
+            logger.info('Class weight is enabled, but loss object has no class_weight field.')
+    except Exception as exc:
+        logger.warning(f'Failed to apply class_weight: {exc}')
+
+
 def train_model(model,
                 dataset,
                 cfg,
@@ -146,6 +166,8 @@ def train_model(model,
         device_ids=[torch.cuda.current_device()],
         broadcast_buffers=False,
         find_unused_parameters=find_unused_parameters)
+
+    _apply_class_weight_if_needed(model, dataset[0], cfg, logger)
 
     # build runner
     optimizer = build_optimizer(model, cfg.optimizer)

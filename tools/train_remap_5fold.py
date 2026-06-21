@@ -29,6 +29,12 @@ DIST_TRAIN = REPO_ROOT / "tools" / "dist_train.sh"
 SPLIT_DIR = REPO_ROOT / "data" / "REMAP" / "SitToStand" / "splits"
 
 
+def _read_exp_version(config_path: Path) -> str:
+    text = config_path.read_text()
+    match = re.search(r"^exp_version\s*=\s*['\"]([^'\"]+)['\"]\s*$", text, flags=re.MULTILINE)
+    return match.group(1) if match else "remap"
+
+
 def _has_all_splits() -> bool:
     for fold in range(5):
         for split in ("train", "val", "test"):
@@ -48,9 +54,8 @@ def _ensure_splits() -> None:
 def _make_fold_config(base_config: Path, fold: int, tmp_dir: Path) -> Path:
     text = base_config.read_text()
     text = re.sub(r"^fold\s*=\s*\d+\s*$", f"fold = {fold}", text, flags=re.MULTILINE)
-    text = re.sub(r"^val_fold\s*=\s*.*$", "val_fold = (fold + 1) % 5", text, flags=re.MULTILINE)
-    text = re.sub(r"^train_folds\s*=\s*.*$", "train_folds = [i for i in range(5) if i not in {fold, val_fold}]", text, flags=re.MULTILINE)
-    text = re.sub(r"^work_dir\s*=\s*.*$", "work_dir = f'./work_dirs/remap/fold_{fold}'", text, flags=re.MULTILINE)
+    text = re.sub(r"^exp_version\s*=\s*.*$", "exp_version = 'ver0'", text, flags=re.MULTILINE)
+    text = re.sub(r"^work_dir\s*=\s*.*$", "work_dir = f'./work_dirs/remap/{exp_version}/fold_{fold}'", text, flags=re.MULTILINE)
 
     out_path = tmp_dir / f"remap_fold_{fold}.py"
     out_path.write_text(text)
@@ -92,6 +97,7 @@ def main() -> None:
         shutil.rmtree(SPLIT_DIR)
 
     _ensure_splits()
+    exp_version = _read_exp_version(args.base_config)
 
     extra_args = [arg for arg in args.extra_args if arg != "--"]
     if args.validate:
@@ -103,8 +109,14 @@ def main() -> None:
 
     work_dirs_root = REPO_ROOT / "work_dirs"
     work_dirs_root.mkdir(parents=True, exist_ok=True)
+    remap_root = work_dirs_root / "remap"
+    remap_root.mkdir(parents=True, exist_ok=True)
+    version_root = remap_root / exp_version
+    version_root.mkdir(parents=True, exist_ok=True)
+    tmp_root = version_root / "_tmp"
+    tmp_root.mkdir(parents=True, exist_ok=True)
 
-    with tempfile.TemporaryDirectory(prefix="remap_5fold_", dir=str(REPO_ROOT / "work_dirs")) as tmp:
+    with tempfile.TemporaryDirectory(prefix="remap_5fold_", dir=str(tmp_root)) as tmp:
         tmp_dir = Path(tmp)
         for fold in range(args.start_fold, args.start_fold + args.folds):
             fold_cfg = _make_fold_config(args.base_config, fold, tmp_dir)
