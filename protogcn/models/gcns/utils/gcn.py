@@ -31,7 +31,7 @@ class unit_gcn(nn.Module):
         num_subsets = A.size(0)
         self.num_subsets = num_subsets
         self.view_num = view_num
-        self.use_view = use_view
+        self.use_view = bool(use_view and view_num > 0)
         self.ratio = ratio
         mid_channels = int(ratio * out_channels)
         self.mid_channels = mid_channels

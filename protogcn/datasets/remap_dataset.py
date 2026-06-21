@@ -13,6 +13,7 @@ from .builder import DATASETS
 
 
 LABEL_COL = 'MDS-UPDRS_score_3.9 _arising_from_chair'
+MAX_LABEL = 3
 
 
 def _default_label_workbook():
@@ -89,6 +90,8 @@ class RemapSitToStandDataset(BaseDataset):
             label = row.get('label', None)
             if label is None or label == '' or str(label).lower() == 'nan':
                 continue
+            if int(float(label)) > MAX_LABEL:
+                continue
             frame_dir = row.get('frame_dir') or _sequence_name_from_row(row)
             csv_name = row.get('file', f'{frame_dir}.csv')
             csv_path = self.skeleton_dir / csv_name if self.skeleton_dir is not None else Path(csv_name)
@@ -125,6 +128,8 @@ class RemapSitToStandDataset(BaseDataset):
             label = row[self.label_col]
             if pd.isna(label):
                 continue
+            if int(label) > MAX_LABEL:
+                continue
             frame_dir = _sequence_name_from_row(row)
             csv_name = f'{frame_dir}.csv'
             csv_path = self.skeleton_dir / csv_name if self.skeleton_dir is not None else Path(csv_name)
@@ -158,7 +163,7 @@ class RemapSitToStandDataset(BaseDataset):
             return self._load_from_split_csv()
         return self._load_from_workbook()
 
-    def evaluate(self, results, metrics=None, logger=None, **deprecated_kwargs):
+    def evaluate(self, results, metrics=None, logger=None, split_name=None, **deprecated_kwargs):
         if not isinstance(results, list):
             raise TypeError(f'results must be a list, but got {type(results)}')
         assert len(results) == len(self), (
@@ -206,7 +211,8 @@ class RemapSitToStandDataset(BaseDataset):
         if 'f1_score' in metrics:
             eval_results['f1_score'] = float(f1_per_class.mean())
 
-        log_prefix = '\nEvaluating REMAP severity classification ...'
+        split_suffix = f' [{split_name}]' if split_name else ''
+        log_prefix = f'\nEvaluating REMAP severity classification{split_suffix} ...'
         print_log(log_prefix, logger=logger)
         for key, value in eval_results.items():
             print_log(f'{key}\t{value:.4f}', logger=logger)
