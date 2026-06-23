@@ -5,15 +5,17 @@ from functools import lru_cache
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import imageio.v2 as imageio
 import numpy as np
 import torch
+from tqdm import tqdm
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 import argparse
 
 
 def setup_chumpy_shim():
-    """Tạo mock module cho chumpy để parse model SMPL cũ mà không cần cài đặt package."""
+    """Register a lightweight chumpy shim for loading legacy SMPL models."""
     if "chumpy" not in sys.modules:
         chumpy = types.ModuleType("chumpy")
         chumpy.ch = types.ModuleType("chumpy.ch")
@@ -41,14 +43,14 @@ def setup_chumpy_shim():
 
 
 def load_pickle_data(file_path):
-    """Đọc dữ liệu từ file pickle."""
+    """Load a pickle file."""
     with open(file_path, "rb") as f:
         return pickle.load(f)
 
 
 @lru_cache(maxsize=1)
 def load_smpl_body_model(model_path, preprocessing_path):
-    """Load và cache SMPL body model để tránh phải load lại nhiều lần."""
+    """Load and cache the SMPL body model."""
     preprocessing_path = Path(preprocessing_path).resolve()
     if str(preprocessing_path) not in sys.path:
         sys.path.insert(0, str(preprocessing_path))
@@ -56,104 +58,157 @@ def load_smpl_body_model(model_path, preprocessing_path):
     try:
         from human_body_prior.body_model.body_model import BodyModel
     except ModuleNotFoundError:
-        # Fallback an toàn nếu caller truyền nhầm path hoặc môi trường chưa set PYTHONPATH.
         repo_root = Path(__file__).resolve().parent.parent
         fallback_path = repo_root / "docs" / "CARE-PD" / "data" / "preprocessing"
         if str(fallback_path) not in sys.path:
             sys.path.insert(0, str(fallback_path))
         from human_body_prior.body_model.body_model import BodyModel
-    
+
     return BodyModel(bm_fname=str(model_path), num_betas=10)
 
 
-def extract_mesh_and_skeleton(record, body_model, frame_idx=0):
-    """Tính toán và trích xuất cả vertices, faces VÀ joints (skeleton) từ dữ liệu pose, trans, beta."""
+def _prepare_smpl_inputs(record):
+    """Prepare SMPL inputs for a full sequence."""
     pose = np.asarray(record['pose'], dtype=np.float32)
     trans = np.asarray(record['trans'], dtype=np.float32)
     beta = np.asarray(record['beta'], dtype=np.float32)
-    
+
     if beta.ndim == 1:
         beta = beta[None, :]
     if beta.shape[0] != pose.shape[0]:
         beta = np.tile(beta, (pose.shape[0], 1))
 
-    # Chuyển đổi sang tensor
-    root_orient = torch.from_numpy(pose[:, :3]).float()
-    body_pose = torch.from_numpy(pose[:, 3:]).float()
-    betas = torch.from_numpy(beta).float()
-    trans_t = torch.from_numpy(trans).float()
+    return (
+        torch.from_numpy(pose[:, :3]).float(),
+        torch.from_numpy(pose[:, 3:]).float(),
+        torch.from_numpy(beta).float(),
+        torch.from_numpy(trans).float(),
+    )
 
-    # Forward qua body model
+
+def _forward_body_model(record, body_model):
+    """Run SMPL forward pass for a full sequence."""
+    root_orient, body_pose, betas, trans_t = _prepare_smpl_inputs(record)
     with torch.no_grad():
-        body = body_model(
+        return body_model(
             root_orient=root_orient,
             pose_body=body_pose,
             betas=betas,
             trans=trans_t,
         )
 
-    # 1. Lấy vertices và faces
+
+def extract_mesh_and_skeleton(record, body_model, frame_idx=0):
+    """Extract vertices, faces, and joints for a single frame."""
+    body = _forward_body_model(record, body_model)
+
     verts = getattr(body, 'v', getattr(body, 'verts', None))
     faces = getattr(body_model, 'f', getattr(body_model, 'faces', None))
-    
     if verts is None or faces is None:
-        raise ValueError("Không thể trích xuất vertices hoặc faces từ body model.")
+        raise ValueError("Unable to extract vertices or faces from the body model.")
 
-    verts_frame = verts.detach().cpu().numpy()[frame_idx]
-    faces_np = np.asarray(faces, dtype=np.int64)
-
-    # 2. Lấy joints (3D skeleton)
     joints = getattr(body, 'Jtr', getattr(body, 'joints', None))
     if joints is None:
-        raise ValueError("Không tìm thấy dữ liệu joints trong body model.")
-    joints_frame = joints.detach().cpu().numpy()[frame_idx]
+        raise ValueError("Unable to find joints in the body model.")
 
-    return verts_frame, faces_np, joints_frame
+    return (
+        verts.detach().cpu().numpy()[frame_idx],
+        np.asarray(faces, dtype=np.int64),
+        joints.detach().cpu().numpy()[frame_idx],
+    )
 
 
-def render_3d_mesh(verts, faces, title="3D Mesh", save_path=None):
-    """Render 3D mesh bằng matplotlib và tùy chọn lưu ra file."""
+def _flip_vertical_axis(points):
+    """Flip all three axes to match the current render orientation."""
+    points = np.asarray(points, dtype=np.float32).copy()
+    points[..., 0] *= -1.0
+    points[..., 1] *= -1.0
+    points[..., 2] *= -1.0
+    return points
+
+
+def _plot_gaitgen_floor(ax, points, span_scale=0.35, floor_color='#A8A8A8', alpha=0.6):
+    """Plot a GAITGen-style XZ floor plane."""
+    min_v = points.min(axis=0)
+    max_v = points.max(axis=0)
+    floor_y = min_v[1]
+    xx, zz = np.meshgrid(
+        [min_v[0] - (max_v[0] - min_v[0]) * span_scale, max_v[0] + (max_v[0] - min_v[0]) * span_scale],
+        [min_v[2] - (max_v[2] - min_v[2]) * span_scale, max_v[2] + (max_v[2] - min_v[2]) * span_scale],
+    )
+    yy = np.full_like(xx, floor_y)
+    ax.plot_surface(xx, yy, zz, color=floor_color, alpha=alpha, shade=False)
+    return min_v, max_v, floor_y
+
+
+def _set_gaitgen_view(ax, center, span, floor_y, z_center):
+    """Apply the GAITGen camera and bounds."""
+    half = span / 2.0
+    ax.set_xlim(center[0] - half, center[0] + half)
+    ax.set_ylim(floor_y, floor_y + span)
+    ax.set_zlim(z_center - half, z_center + half)
+    ax.set_box_aspect((1, 1, 1))
+    ax.view_init(elev=110, azim=-90)
+    ax.dist = 7.5
+    ax.axis('off')
+    ax.grid(False)
+    return half
+
+
+def _save_figure_as_gif_frames(fig):
+    """Convert the current figure to an RGB frame."""
+    fig.canvas.draw()
+    rgba = np.asarray(fig.canvas.buffer_rgba())
+    return rgba[..., :3].copy()
+
+
+def _build_output_path(base_path, participant_id=None, seq_id=None):
+    """Build an output path under participant/sequence folders when IDs are provided."""
+    base_path = Path(base_path)
+    if participant_id is None or seq_id is None:
+        base_path.parent.mkdir(parents=True, exist_ok=True)
+        return base_path
+
+    output_dir = base_path.parent / str(participant_id) / str(seq_id)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir / base_path.name
+
+
+def render_3d_mesh(verts, faces, title="3D Mesh", save_path=None, participant_id=None, seq_id=None):
+    """Render a 3D mesh and optionally save it."""
+    verts = _flip_vertical_axis(verts)
     mesh = verts[faces]
     fig = plt.figure(figsize=(9, 9))
     ax = fig.add_subplot(111, projection='3d')
-    
+
     poly = Poly3DCollection(mesh, facecolor='#9ca3af', edgecolor='none', alpha=0.35)
     ax.add_collection3d(poly)
 
-    # Tính toán bounding box để view mesh cân đối
-    center = verts.mean(axis=0)
-    span = np.max(verts.max(axis=0) - verts.min(axis=0))
-    span = float(span if span > 1e-6 else 1.0)
-    half = span / 2.0
-    
-    ax.set_xlim(center[0] - half, center[0] + half)
-    ax.set_ylim(center[1] - half, center[1] + half)
-    ax.set_zlim(center[2] - half, center[2] + half)
-    ax.set_box_aspect((1, 1, 1))
-    
-    # Thiết lập giao diện plot
+    min_v = verts.min(axis=0)
+    max_v = verts.max(axis=0)
+    center = (max_v + min_v) / 2.0
+    span = float(np.max(max_v - min_v))
+    span = span if span > 1e-6 else 1.0
+
+    _, _, floor_y = _plot_gaitgen_floor(ax, verts)
+    _set_gaitgen_view(ax, center, span, floor_y, center[2])
     ax.set_title(title)
-    ax.set_xlabel('X')
-    ax.set_ylabel('Y')
-    ax.set_zlabel('Z')
-    ax.view_init(elev=15, azim=-75)
     plt.tight_layout()
-    
+
     if save_path:
+        save_path = _build_output_path(save_path, participant_id=participant_id, seq_id=seq_id)
         fig.savefig(save_path, dpi=200, bbox_inches='tight')
-        print(f"Đã lưu ảnh mesh tại: {save_path}")
-        
-    plt.show()
+        print(f"Saved mesh image to: {save_path}")
+    plt.close(fig)
+    
 
 
-def render_skeleton(joints, title="SMPL Skeleton Only", save_path=None):
-    """Render chỉ bộ xương (Skeleton) từ dữ liệu Joints 3D."""
-
-
+def render_skeleton(joints, title="SMPL Skeleton Only", save_path=None, participant_id=None, seq_id=None):
+    """Render a skeleton and optionally save it."""
+    joints = _flip_vertical_axis(joints)
     fig = plt.figure(figsize=(10, 10))
     ax = fig.add_subplot(111, projection='3d')
 
-    # 2. Định nghĩa các xương (Bones)
     smpl_bones = [
         (0, 1), (0, 2), (0, 3),    # Pelvis -> L/R Hip, Spine1
         (1, 4), (2, 5), (3, 6),    # Hips -> Knees, Spine1 -> Spine2
@@ -167,107 +222,265 @@ def render_skeleton(joints, title="SMPL Skeleton Only", save_path=None):
         (20, 22), (21, 23)         # Wrists -> Hands
     ]
 
-    # Vẽ khớp
     ax.scatter(joints[:, 0], joints[:, 1], joints[:, 2], color='#e74c3c', s=40, depthshade=True, zorder=5)
 
-    # Vẽ xương
     for bone in smpl_bones:
         if bone[0] < len(joints) and bone[1] < len(joints):
             start_joint = joints[bone[0]]
             end_joint = joints[bone[1]]
-            ax.plot([start_joint[0], end_joint[0]], 
-                    [start_joint[1], end_joint[1]], 
-                    [start_joint[2], end_joint[2]], color='#2c3e50', linewidth=3, zorder=4)
+            ax.plot(
+                [start_joint[0], end_joint[0]],
+                [start_joint[1], end_joint[1]],
+                [start_joint[2], end_joint[2]],
+                color='#2c3e50',
+                linewidth=3,
+                zorder=4,
+            )
 
-    # 3. Tính toán Bounding Box
     min_v = joints.min(axis=0)
     max_v = joints.max(axis=0)
     center = (max_v + min_v) / 2.0
-    span = np.max(max_v - min_v)
-    half = span / 2.0
-    
-    ax.set_xlim(center[0] - half, center[0] + half)
-    ax.set_ylim(center[1] - half, center[1] + half)
-    ax.set_zlim(min_v[2], min_v[2] + span)
-    ax.set_box_aspect((1, 1, 1))
-    
-    # 4. Thêm mặt sàn
-    floor_z = min_v[2] - 0.02
-    floor_length = half * 1.5
-    xx, yy = np.meshgrid(
-        [center[0] - floor_length, center[0] + floor_length*2],
-        [center[1] - floor_length, center[1] + floor_length]
-    )
-    zz = np.full_like(xx, floor_z)
-    ax.plot_surface(xx, yy, zz, color='#A8A8A8', alpha=0.6, shade=False)
+    span = float(np.max(max_v - min_v))
+    span = span if span > 1e-6 else 1.0
 
-    # 5. Tùy chỉnh
-    ax.view_init(elev=25, azim=-45)
-    ax.axis('off')
+    _, _, floor_y = _plot_gaitgen_floor(ax, joints)
+    _set_gaitgen_view(ax, center, span, floor_y, center[2])
+
     ax.set_title(title, pad=20)
-    
     plt.tight_layout()
-    
+
     if save_path:
+        save_path = _build_output_path(save_path, participant_id=participant_id, seq_id=seq_id)
         fig.savefig(save_path, dpi=300, bbox_inches='tight', transparent=False, facecolor='white')
-        print(f"Đã lưu ảnh Skeleton tại: {save_path}")
-        
-    plt.show()
+        print(f"Saved skeleton image to: {save_path}")
+    plt.close(fig)
+    
+
+
+def _forward_smpl_sequence(record, body_model):
+    """Forward SMPL for a full sequence."""
+    body = _forward_body_model(record, body_model)
+    verts = getattr(body, 'v', getattr(body, 'verts', None))
+    faces = getattr(body_model, 'f', getattr(body_model, 'faces', None))
+    joints = getattr(body, 'Jtr', getattr(body, 'joints', None))
+
+    if verts is None or faces is None or joints is None:
+        raise ValueError("Unable to extract vertices, faces, or joints from the body model.")
+
+    return (
+        verts.detach().cpu().numpy(),
+        np.asarray(faces, dtype=np.int64),
+        joints.detach().cpu().numpy(),
+    )
+
+
+def save_mesh_gif(record, body_model, gif_path, frame_stride=1, fps=12, participant_id=None, seq_id=None):
+    """Save a mesh animation as a GIF."""
+    verts_all, faces, _ = _forward_smpl_sequence(record, body_model)
+    frame_ids = list(range(0, len(verts_all), max(1, int(frame_stride))))
+    frames = []
+
+    for frame_idx in frame_ids:
+        verts = _flip_vertical_axis(verts_all[frame_idx])
+        mesh = verts[faces]
+        fig = plt.figure(figsize=(9, 9))
+        ax = fig.add_subplot(111, projection='3d')
+        poly = Poly3DCollection(mesh, facecolor='#d4a017', edgecolor='none', alpha=0.95)
+        ax.add_collection3d(poly)
+
+        min_v = verts.min(axis=0)
+        max_v = verts.max(axis=0)
+        center = (max_v + min_v) / 2.0
+        span = float(np.max(max_v - min_v))
+        span = span if span > 1e-6 else 1.0
+
+        _, _, floor_y = _plot_gaitgen_floor(ax, verts, alpha=0.65)
+        _set_gaitgen_view(ax, center, span, floor_y, center[2])
+        ax.set_title(f"3D mesh | frame {frame_idx}")
+        plt.tight_layout()
+
+        frames.append(_save_figure_as_gif_frames(fig))
+        plt.close(fig)
+
+    gif_path = _build_output_path(gif_path, participant_id=participant_id, seq_id=seq_id)
+    imageio.mimsave(gif_path, frames, duration=1.0 / max(int(fps), 1))
+    print(f"Saved mesh GIF to: {gif_path}")
+
+
+def save_skeleton_gif(record, body_model, gif_path, frame_stride=1, fps=12, participant_id=None, seq_id=None):
+    """Save a skeleton animation as a GIF."""
+    _, _, joints_all = _forward_smpl_sequence(record, body_model)
+    frame_ids = list(range(0, len(joints_all), max(1, int(frame_stride))))
+    frames = []
+
+    smpl_bones = [
+        (0, 1), (0, 2), (0, 3),
+        (1, 4), (2, 5), (3, 6),
+        (4, 7), (5, 8), (6, 9),
+        (7, 10), (8, 11),
+        (9, 12), (9, 13), (9, 14),
+        (12, 15),
+        (13, 16), (14, 17),
+        (16, 18), (17, 19),
+        (18, 20), (19, 21),
+        (20, 22), (21, 23)
+    ]
+
+    for frame_idx in frame_ids:
+        joints = _flip_vertical_axis(joints_all[frame_idx])
+        fig = plt.figure(figsize=(9, 9))
+        ax = fig.add_subplot(111, projection='3d')
+
+        ax.scatter(joints[:, 0], joints[:, 1], joints[:, 2], color='#e74c3c', s=40, depthshade=True, zorder=5)
+        for bone in smpl_bones:
+            if bone[0] < len(joints) and bone[1] < len(joints):
+                start_joint = joints[bone[0]]
+                end_joint = joints[bone[1]]
+                ax.plot(
+                    [start_joint[0], end_joint[0]],
+                    [start_joint[1], end_joint[1]],
+                    [start_joint[2], end_joint[2]],
+                    color='#2c3e50', linewidth=3, zorder=4
+                )
+
+        min_v = joints.min(axis=0)
+        max_v = joints.max(axis=0)
+        center = (max_v + min_v) / 2.0
+        span = float(np.max(max_v - min_v))
+        span = span if span > 1e-6 else 1.0
+
+        _, _, floor_y = _plot_gaitgen_floor(ax, joints, alpha=0.65)
+        _set_gaitgen_view(ax, center, span, floor_y, center[2])
+        ax.set_title(f"SMPL Skeleton Only | frame {frame_idx}", pad=20)
+        plt.tight_layout()
+
+        frames.append(_save_figure_as_gif_frames(fig))
+        plt.close(fig)
+
+    gif_path = _build_output_path(gif_path, participant_id=participant_id, seq_id=seq_id)
+    imageio.mimsave(gif_path, frames, duration=1.0 / max(int(fps), 1))
+    print(f"Saved skeleton GIF to: {gif_path}")
+
+
+def save_skeleton_sequence_pkl(data_path, fold_path, body_model, pkl_path, frame_stride=1):
+    """Save skeleton sequences while preserving the fold/split/participant structure."""
+    data = load_pickle_data(data_path)
+    folds = load_pickle_data(fold_path)
+
+    enriched_folds = {}
+    for fold_id, fold_info in tqdm(folds.items(), desc="Folds", total=len(folds)):
+        enriched_folds[fold_id] = {}
+        for split_name in ('train', 'eval'):
+            participants = fold_info.get(split_name, [])
+            enriched_folds[fold_id][split_name] = {}
+            for participant_id in tqdm(participants, desc=f"Fold {fold_id} {split_name}", leave=False):
+                participant_id = str(participant_id)
+                if participant_id not in data:
+                    continue
+                enriched_folds[fold_id][split_name][participant_id] = {}
+                for seq_id, record in tqdm(
+                    data[participant_id].items(),
+                    desc=f"Participant {participant_id}",
+                    leave=False,
+                ):
+                    _, _, joints_all = _forward_smpl_sequence(record, body_model)
+                    frame_ids = list(range(0, len(joints_all), max(1, int(frame_stride))))
+                    skeleton_seq = np.asarray(
+                        [_flip_vertical_axis(joints_all[i]) for i in frame_ids],
+                        dtype=np.float32,
+                    )
+                    enriched_record = dict(record)
+                    enriched_record['skeleton'] = skeleton_seq
+                    enriched_folds[fold_id][split_name][participant_id][seq_id] = enriched_record
+
+    pkl_path = Path(pkl_path)
+    pkl_path.parent.mkdir(parents=True, exist_ok=True)
+    with pkl_path.open('wb') as f:
+        pickle.dump(enriched_folds, f)
+    print(f"Saved skeleton sequence pickle to: {pkl_path}")
 
 
 def par_args():
-    """Hàm để parse các tham số từ command line nếu cần."""
-    
-    parser = argparse.ArgumentParser(description="Render 3D mesh hoặc skeleton từ dữ liệu PD-GaM.")
-    parser.add_argument('--data_path', type=str, default='/home/taitruong256/taitruong/CCU/GaitXplain/docs/ProtoGCN_gait/data/CARE-PD/PD-GaM.pkl', help='Đường dẫn tới file dữ liệu pickle.')
-    parser.add_argument('--preprocessing_path', type=str, default='/home/taitruong256/taitruong/CCU/GaitXplain/docs/ProtoGCN_gait/docs/CARE-PD/data/preprocessing', help='Đường dẫn tới thư mục preprocessing.')
-    parser.add_argument('--smpl_model_path', type=str, default=None, help='Đường dẫn tới file SMPL model. Nếu không cung cấp, sẽ sử dụng mặc định trong preprocessing.')
-    parser.add_argument('--save_img_path', type=str, default='/home/taitruong256/taitruong/CCU/GaitXplain/docs/ProtoGCN_gait/data/CARE-PD/figures/pd_gam_frame0_mesh.png', help='Đường dẫn để lưu ảnh kết quả.')
-    parser.add_argument('--participant_id', type=str, default='001', help='ID của participant.')
-    parser.add_argument('--seq_id', type=str, default='001-12-104704_wid01_0', help='ID của sequence.')
-    parser.add_argument('--frame_idx', type=int, default=0, help='Chỉ số frame cần render.')
-    
-    # Cập nhật thêm argument để dễ chọn chế độ vẽ
-    parser.add_argument('--render_mode', type=str, choices=['mesh', 'skeleton'], default='skeleton', help='Chọn render mesh hoặc skeleton.')
-    
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(description="Render 3D mesh or skeleton from PD-GaM data.")
+    parser.add_argument('--data_path', type=str, default='/home/taitruong256/taitruong/CCU/GaitXplain/docs/ProtoGCN_gait/data/CARE-PD/PD-GaM.pkl', help='Pickle data path.')
+    parser.add_argument('--preprocessing_path', type=str, default='/home/taitruong256/taitruong/CCU/GaitXplain/docs/ProtoGCN_gait/docs/CARE-PD/data/preprocessing', help='Preprocessing directory.')
+    parser.add_argument('--smpl_model_path', type=str, default=None, help='SMPL model path. Defaults to the bundled model.')
+    parser.add_argument('--save_img_path', type=str, default='/home/taitruong256/taitruong/CCU/GaitXplain/docs/ProtoGCN_gait/data/CARE-PD/figures/pd_gam_frame0_mesh.png', help='Output image path.')
+    parser.add_argument('--participant_id', type=str, default='001', help='Participant ID.')
+    parser.add_argument('--seq_id', type=str, default='001-12-104704_wid01_0', help='Sequence ID.')
+    parser.add_argument('--frame_idx', type=int, default=0, help='Frame index to render.')
     return parser.parse_args()
 
 
 def main():
-    # 1. Khai báo các đường dẫn cố định (Constants)
     args = par_args()
     DATA_PATH = args.data_path
     PREPROCESSING_PATH = args.preprocessing_path
     SMPL_MODEL_PATH = args.smpl_model_path or f'{PREPROCESSING_PATH}/common/body_models/smpl/SMPL_NEUTRAL.pkl'
     SAVE_IMG_PATH = args.save_img_path
 
-    # 2. Khởi tạo môi trường
     setup_chumpy_shim()
-    
-    # 3. Load dữ liệu và Model
-    print("Đang load dữ liệu...")
+
+    print("Loading data...")
     data = load_pickle_data(DATA_PATH)
     body_model = load_smpl_body_model(SMPL_MODEL_PATH, PREPROCESSING_PATH)
-    
-    # 4. Trích xuất thông tin cụ thể
+
     participant_id = args.participant_id
     seq_id = args.seq_id
     frame_idx = args.frame_idx
     record = data[participant_id][seq_id]
-    
-    print(f"Xử lý dữ liệu ({args.render_mode}) cho frame {frame_idx}...")
-    verts, faces, joints = extract_mesh_and_skeleton(record, body_model, frame_idx=frame_idx)
-    
-    # 5. Vẽ và lưu ảnh dựa trên render_mode
-    if args.render_mode == 'mesh':
-        title = f"3D mesh - participant {participant_id} | sequence {seq_id} | frame {frame_idx}"
-        render_3d_mesh(verts, faces, title=title, save_path=SAVE_IMG_PATH)
-    elif args.render_mode == 'skeleton':
-        title = f"SMPL Skeleton Only - participant {participant_id} | frame {frame_idx}"
-        # Đổi tên file lưu nếu chạy skeleton để tránh đè ảnh cũ
-        save_skeleton_path = SAVE_IMG_PATH.replace('mesh.png', '_skeleton.png')
-        render_skeleton(joints, title=title, save_path=save_skeleton_path)
 
+    print(f"Processing frame {frame_idx}...")
+    verts, faces, joints = extract_mesh_and_skeleton(record, body_model, frame_idx=frame_idx)
+
+    title = f"3D mesh - participant {participant_id} | sequence {seq_id} | frame {frame_idx}"
+    render_3d_mesh(
+        verts,
+        faces,
+        title=title,
+        save_path=SAVE_IMG_PATH,
+        participant_id=participant_id,
+        seq_id=seq_id,
+    )
+
+    title = f"SMPL Skeleton Only - participant {participant_id} | frame {frame_idx}"
+    save_skeleton_path = SAVE_IMG_PATH.replace('mesh.png', '_skeleton.png')
+    render_skeleton(
+        joints,
+        title=title,
+        save_path=save_skeleton_path,
+        participant_id=participant_id,
+        seq_id=seq_id,
+    )
+
+    save_skeleton_gif(
+        record,
+        body_model,
+        '/home/taitruong256/taitruong/CCU/GaitXplain/docs/ProtoGCN_gait/data/CARE-PD/figures/skeleton.gif',
+        frame_stride=2,
+        fps=12,
+        participant_id=participant_id,
+        seq_id=seq_id,
+    )
+
+    save_mesh_gif(
+        record,
+        body_model,
+        '/home/taitruong256/taitruong/CCU/GaitXplain/docs/ProtoGCN_gait/data/CARE-PD/figures/mesh.gif',
+        frame_stride=2,
+        fps=12,
+        participant_id=participant_id,
+        seq_id=seq_id,
+    )
+
+    save_skeleton_sequence_pkl(
+        '/home/taitruong256/taitruong/CCU/GaitXplain/docs/ProtoGCN_gait/data/CARE-PD/PD-GaM.pkl',
+        '/home/taitruong256/taitruong/CCU/GaitXplain/docs/ProtoGCN_gait/data/CARE-PD/folds/UPDRS_Datasets/PD-GaM_6fold_participants.pkl',
+        body_model,
+        '/home/taitruong256/taitruong/CCU/GaitXplain/docs/ProtoGCN_gait/data/CARE-PD/folds/UPDRS_Datasets/PD-GaM_6fold_participants_skeleton.pkl',
+        frame_stride=1,
+    )
 
 if __name__ == "__main__":
     main()
