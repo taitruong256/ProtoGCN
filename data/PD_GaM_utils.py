@@ -403,10 +403,10 @@ def save_skeleton_sequence_pkl(data_path, fold_path, body_model, pkl_path, frame
 def par_args():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="Render 3D mesh or skeleton from PD-GaM data.")
-    parser.add_argument('--data_path', type=str, default='/home/taitruong256/taitruong/CCU/GaitXplain/docs/ProtoGCN_gait/data/CARE-PD/PD-GaM.pkl', help='Pickle data path.')
-    parser.add_argument('--preprocessing_path', type=str, default='/home/taitruong256/taitruong/CCU/GaitXplain/docs/ProtoGCN_gait/docs/CARE-PD/data/preprocessing', help='Preprocessing directory.')
+    parser.add_argument('--data_path', type=str, default='data/CARE-PD/PD-GaM.pkl', help='Pickle data path.')
+    parser.add_argument('--preprocessing_path', type=str, default='docs/CARE-PD/data/preprocessing', help='Preprocessing directory.')
     parser.add_argument('--smpl_model_path', type=str, default=None, help='SMPL model path. Defaults to the bundled model.')
-    parser.add_argument('--save_img_path', type=str, default='/home/taitruong256/taitruong/CCU/GaitXplain/docs/ProtoGCN_gait/data/CARE-PD/figures/pd_gam_frame0_mesh.png', help='Output image path.')
+    parser.add_argument('--save_img_path', type=str, default='data/CARE-PD/figures/pd_gam_frame0_mesh.png', help='Output image path.')
     parser.add_argument('--participant_id', type=str, default='001', help='Participant ID.')
     parser.add_argument('--seq_id', type=str, default='001-12-104704_wid01_0', help='Sequence ID.')
     parser.add_argument('--frame_idx', type=int, default=0, help='Frame index to render.')
@@ -457,7 +457,7 @@ def main():
     save_skeleton_gif(
         record,
         body_model,
-        '/home/taitruong256/taitruong/CCU/GaitXplain/docs/ProtoGCN_gait/data/CARE-PD/figures/skeleton.gif',
+        'data/CARE-PD/figures/skeleton.gif',
         frame_stride=2,
         fps=12,
         participant_id=participant_id,
@@ -467,7 +467,7 @@ def main():
     save_mesh_gif(
         record,
         body_model,
-        '/home/taitruong256/taitruong/CCU/GaitXplain/docs/ProtoGCN_gait/data/CARE-PD/figures/mesh.gif',
+        'data/CARE-PD/figures/mesh.gif',
         frame_stride=2,
         fps=12,
         participant_id=participant_id,
@@ -475,10 +475,10 @@ def main():
     )
 
     save_skeleton_sequence_pkl(
-        '/home/taitruong256/taitruong/CCU/GaitXplain/docs/ProtoGCN_gait/data/CARE-PD/PD-GaM.pkl',
-        '/home/taitruong256/taitruong/CCU/GaitXplain/docs/ProtoGCN_gait/data/CARE-PD/folds/UPDRS_Datasets/PD-GaM_6fold_participants.pkl',
+        'data/CARE-PD/PD-GaM.pkl',
+        'data/CARE-PD/folds/UPDRS_Datasets/PD-GaM_6fold_participants.pkl',
         body_model,
-        '/home/taitruong256/taitruong/CCU/GaitXplain/docs/ProtoGCN_gait/data/CARE-PD/folds/UPDRS_Datasets/PD-GaM_6fold_participants_skeleton.pkl',
+        'data/CARE-PD/folds/UPDRS_Datasets/PD-GaM_6fold_participants_skeleton.pkl',
         frame_stride=1,
     )
 
