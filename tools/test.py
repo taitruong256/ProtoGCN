@@ -262,7 +262,10 @@ def main():
         if eval_cfg:
             eval_res = dataset.evaluate(outputs, **eval_cfg)
             for name, val in eval_res.items():
-                print(f'{name}: {val:.04f}')
+                if isinstance(val, (float, int, np.floating, np.integer)):
+                    print(f'{name}: {float(val):.04f}')
+                else:
+                    print(f'{name}: {val}')
 
     dist.barrier()
     if rank == 0 and memcached:

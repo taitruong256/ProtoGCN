@@ -72,12 +72,14 @@ class RecognizerGCN(BaseRecognizer):
                  view_num=11,
                  view_loss_weight=1.0,
                  view_label_key='view',
+                 use_view_loss=True,
                  **kwargs):
         self.view_num = view_num
         self.view_loss_weight = view_loss_weight
         self.view_label_key = view_label_key
+        self.use_view_loss = use_view_loss
         super().__init__(backbone, cls_head=cls_head, train_cfg=train_cfg, test_cfg=test_cfg)
-        self.view_loss = nn.CrossEntropyLoss()
+        self.view_loss = nn.CrossEntropyLoss() if self.use_view_loss else None
 
     def _extract_view_labels(self, img_metas, device):
         img_metas = _unwrap_meta(img_metas)
@@ -120,26 +122,27 @@ class RecognizerGCN(BaseRecognizer):
         loss = self.cls_head.loss(cls_score, get_graph, gt_label)
         losses.update(loss)
 
-        view_logits = getattr(self.backbone, 'view_logits', None)
-        if view_logits is None:
-            raise RuntimeError('Backbone did not produce view logits. Check unit_gcn/view_num configuration.')
+        if self.use_view_loss:
+            view_logits = getattr(self.backbone, 'view_logits', None)
+            if view_logits is None:
+                raise RuntimeError('Backbone did not produce view logits. Check unit_gcn/view_num configuration.')
 
-        view_label = self._extract_view_labels(kwargs.get('img_metas'), device=gt_label.device)
-        if view_label is None:
-            raise ValueError(
-                'img_metas is required to train the view classifier. '
-                'Make sure the pipeline Collect step keeps the `view` meta key.'
-            )
+            view_label = self._extract_view_labels(kwargs.get('img_metas'), device=gt_label.device)
+            if view_label is None:
+                raise ValueError(
+                    'img_metas is required to train the view classifier. '
+                    'Make sure the pipeline Collect step keeps the `view` meta key.'
+                )
 
-        if view_logits.size(0) != view_label.size(0):
-            raise ValueError(
-                f'View logits batch size {view_logits.size(0)} does not match '
-                f'view labels batch size {view_label.size(0)}.'
-            )
+            if view_logits.size(0) != view_label.size(0):
+                raise ValueError(
+                    f'View logits batch size {view_logits.size(0)} does not match '
+                    f'view labels batch size {view_label.size(0)}.'
+                )
 
-        losses['loss_view'] = self.view_loss(view_logits, view_label) * self.view_loss_weight
-        with torch.no_grad():
-            losses['view_acc'] = (view_logits.argmax(dim=1) == view_label).float().mean()
+            losses['loss_view'] = self.view_loss(view_logits, view_label) * self.view_loss_weight
+            with torch.no_grad():
+                losses['view_acc'] = (view_logits.argmax(dim=1) == view_label).float().mean()
 
         return losses
 
