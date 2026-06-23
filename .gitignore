@@ -1,5 +1,5 @@
 *.pyc
-data/
+data/*
 work_dirs/
 protogcn.egg-info/
 code/
@@ -7,3 +7,4 @@ command.txt
 docs/
 graph.npy
 result.pkl
+!data/PD_GaM_utils.py
