@@ -33,6 +33,8 @@ class BaseHead(nn.Module, metaclass=ABCMeta):
             n_channel = 289
         elif joint_cfg == 'coco_new':   # 20*20=400
             n_channel = 400
+        elif joint_cfg == 'smpl_24':    # 24*24=576
+            n_channel = 576
         self.csc_loss = Class_Specific_Contrastive_Loss(num_classes, n_channel)
         
     @abstractmethod

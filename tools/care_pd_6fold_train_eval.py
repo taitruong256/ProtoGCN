@@ -20,6 +20,8 @@ def parse_args():
         nargs='?',
         help='config path')
     parser.add_argument('--gpus', type=int, default=1, help='number of gpus for dist_train.sh/dist_test.sh')
+    parser.add_argument('--fold', type=int, choices=range(1, 7), default=None,
+                        help='train/evaluate one fold only; default runs all 6 folds')
     parser.add_argument('--skip-train', action='store_true', help='skip training and only evaluate existing checkpoints')
     parser.add_argument('--save-json', default=None, help='path to save final fold metrics json')
     return parser.parse_args()
@@ -82,7 +84,9 @@ def main():
     all_fold_metrics = OrderedDict()
     scalar_metrics = {'accuracy': [], 'precision': [], 'recall': [], 'f1_score': []}
 
-    for fold_id in range(1, 7):
+    fold_ids = [args.fold] if args.fold is not None else range(1, 7)
+
+    for fold_id in fold_ids:
         env = os.environ.copy()
         env['CARE_PD_FOLD'] = str(fold_id)
         env['PYTHONPATH'] = repo_root + (':' + env['PYTHONPATH'] if 'PYTHONPATH' in env else '')
@@ -135,7 +139,8 @@ def main():
 
     all_fold_metrics['summary'] = summary
 
-    print('\n[6-Fold Summary]')
+    summary_title = 'Single-Fold Summary' if args.fold is not None else '6-Fold Summary'
+    print(f'\n[{summary_title}]')
     for key, val in summary.items():
         print(f'{key}: {val:.4f}')
 
