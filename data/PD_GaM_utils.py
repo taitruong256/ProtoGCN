@@ -1,6 +1,7 @@
 import sys
 import types
 import pickle
+from collections import Counter
 from functools import lru_cache
 from pathlib import Path
 
@@ -44,8 +45,150 @@ def setup_chumpy_shim():
 
 def load_pickle_data(file_path):
     """Load a pickle file."""
+    if "numpy._core" not in sys.modules:
+        sys.modules["numpy._core"] = np.core
+    if "numpy._core.multiarray" not in sys.modules:
+        sys.modules["numpy._core.multiarray"] = np.core.multiarray
+    if "numpy._core.numeric" not in sys.modules:
+        sys.modules["numpy._core.numeric"] = np.core.numeric
     with open(file_path, "rb") as f:
         return pickle.load(f)
+
+
+def _normalize_participant_id(participant_id):
+    """Normalize participant IDs to the zero-padded PD-GaM format."""
+    if isinstance(participant_id, str):
+        return participant_id.zfill(3)
+    return str(participant_id).zfill(3)
+
+
+def _iter_split_records(split_data, source_data=None):
+    """Yield records from either nested participant data or participant lists."""
+    if isinstance(split_data, dict):
+        participant_to_sequences = split_data
+    else:
+        if source_data is None:
+            raise ValueError("source_data is required when fold split stores participant lists.")
+        selected = {_normalize_participant_id(pid) for pid in split_data}
+        participant_to_sequences = {
+            _normalize_participant_id(pid): seqs
+            for pid, seqs in source_data.items()
+            if _normalize_participant_id(pid) in selected
+        }
+
+    for participant_id in sorted(participant_to_sequences.keys()):
+        sequences = participant_to_sequences[participant_id]
+        if not isinstance(sequences, dict):
+            continue
+        for sequence_id in sorted(sequences.keys()):
+            record = sequences[sequence_id]
+            if isinstance(record, dict):
+                yield record
+
+
+def count_fold_labels(fold_path, data_path=None, label_key="UPDRS_GAIT", num_classes=4):
+    """Count labels for each train/eval split in every fold."""
+    folds = load_pickle_data(fold_path)
+    source_data = load_pickle_data(data_path) if data_path is not None else None
+    class_ids = list(range(int(num_classes)))
+
+    fold_counts = {}
+    for fold_id in sorted(folds.keys()):
+        fold_counts[fold_id] = {}
+        for split_name in ("train", "eval"):
+            split_data = folds[fold_id].get(split_name, {})
+            labels = []
+            missing = 0
+            for record in _iter_split_records(split_data, source_data=source_data):
+                if label_key in record:
+                    labels.append(int(record[label_key]))
+                else:
+                    missing += 1
+
+            counts = Counter(labels)
+            fold_counts[fold_id][split_name] = {
+                "counts": {class_id: counts.get(class_id, 0) for class_id in class_ids},
+                "total": len(labels),
+                "missing": missing,
+            }
+    return fold_counts
+
+
+def plot_fold_label_distribution(
+    fold_counts,
+    output_dir,
+    num_classes=4,
+    dataset_name="PD-GaM",
+    label_name="UPDRS_GAIT",
+):
+    """Save one train/eval UPDRS-label count chart for each fold."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    class_ids = list(range(int(num_classes)))
+    saved_paths = []
+
+    for fold_id in sorted(fold_counts.keys()):
+        train_counts = [fold_counts[fold_id]["train"]["counts"][class_id] for class_id in class_ids]
+        eval_counts = [fold_counts[fold_id]["eval"]["counts"][class_id] for class_id in class_ids]
+
+        x = np.arange(len(class_ids))
+        width = 0.36
+        max_count = max(train_counts + eval_counts + [1])
+
+        fig, ax = plt.subplots(figsize=(8, 5))
+        train_bars = ax.bar(x - width / 2, train_counts, width, label="train", color="#4C78A8")
+        eval_bars = ax.bar(x + width / 2, eval_counts, width, label="eval", color="#F58518")
+
+        ax.set_title(f"{dataset_name} fold {fold_id} {label_name} distribution")
+        ax.set_xlabel(f"{label_name} label")
+        ax.set_ylabel("Number of sequences")
+        ax.set_xticks(x)
+        ax.set_xticklabels([str(class_id) for class_id in class_ids])
+        ax.set_ylim(0, max_count * 1.18)
+        ax.grid(axis="y", linestyle="--", alpha=0.25)
+        ax.legend()
+
+        ax.bar_label(train_bars, padding=3, fontsize=9)
+        ax.bar_label(eval_bars, padding=3, fontsize=9)
+        fig.tight_layout()
+
+        save_path = output_dir / f"fold_{fold_id}_label_distribution.png"
+        fig.savefig(save_path, dpi=200, bbox_inches="tight")
+        plt.close(fig)
+        saved_paths.append(save_path)
+
+        train_total = fold_counts[fold_id]["train"]["total"]
+        eval_total = fold_counts[fold_id]["eval"]["total"]
+        train_detail = fold_counts[fold_id]["train"]["counts"]
+        eval_detail = fold_counts[fold_id]["eval"]["counts"]
+        print(f"Fold {fold_id}:")
+        print(f"  train total={train_total}, {label_name} counts={train_detail}")
+        print(f"  eval  total={eval_total}, {label_name} counts={eval_detail}")
+        print(f"  saved={save_path}")
+
+    return saved_paths
+
+
+def save_fold_label_distribution_plots(
+    fold_path,
+    output_dir,
+    data_path=None,
+    label_key="UPDRS_GAIT",
+    num_classes=4,
+):
+    """Count labels and save six train/eval distribution charts."""
+    fold_counts = count_fold_labels(
+        fold_path,
+        data_path=data_path,
+        label_key=label_key,
+        num_classes=num_classes,
+    )
+    return plot_fold_label_distribution(
+        fold_counts,
+        output_dir,
+        num_classes=num_classes,
+        label_name=label_key,
+    )
 
 
 @lru_cache(maxsize=1)
@@ -404,6 +547,11 @@ def par_args():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="Render 3D mesh or skeleton from PD-GaM data.")
     parser.add_argument('--data_path', type=str, default='data/CARE-PD/PD-GaM.pkl', help='Pickle data path.')
+    parser.add_argument('--fold_path', type=str, default='data/CARE-PD/folds/UPDRS_Datasets/PD-GaM_6fold_participants_skeleton.pkl', help='6-fold pickle path.')
+    parser.add_argument('--label_key', type=str, default='UPDRS_GAIT', help='Label key used in PD-GaM records.')
+    parser.add_argument('--num_classes', type=int, default=4, help='Number of label classes to draw.')
+    parser.add_argument('--label_plot_dir', type=str, default='data/CARE-PD/figures/label_distribution', help='Directory for fold label plots.')
+    parser.add_argument('--plot_fold_labels', action='store_true', help='Only save six train/eval label-distribution charts and exit.')
     parser.add_argument('--preprocessing_path', type=str, default='docs/CARE-PD/data/preprocessing', help='Preprocessing directory.')
     parser.add_argument('--smpl_model_path', type=str, default=None, help='SMPL model path. Defaults to the bundled model.')
     parser.add_argument('--save_img_path', type=str, default='data/CARE-PD/figures/pd_gam_frame0_mesh.png', help='Output image path.')
@@ -419,6 +567,16 @@ def main():
     PREPROCESSING_PATH = args.preprocessing_path
     SMPL_MODEL_PATH = args.smpl_model_path or f'{PREPROCESSING_PATH}/common/body_models/smpl/SMPL_NEUTRAL.pkl'
     SAVE_IMG_PATH = args.save_img_path
+
+    if args.plot_fold_labels:
+        save_fold_label_distribution_plots(
+            args.fold_path,
+            args.label_plot_dir,
+            data_path=args.data_path,
+            label_key=args.label_key,
+            num_classes=args.num_classes,
+        )
+        return
 
     setup_chumpy_shim()
 
