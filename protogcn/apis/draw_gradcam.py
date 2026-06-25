@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Optional
 
 import matplotlib
@@ -26,7 +27,6 @@ from .draw_activation import (
     _get_graph,
     _get_point_tensor,
     _layout_from_graph,
-    _sequence_name,
     _split_channels,
     _unwrap_meta,
 )
@@ -75,8 +75,8 @@ def _figure_to_rgb_array(fig) -> np.ndarray:
     return frame[..., :3].copy()
 
 
-def _save_heatmap_gif(result: np.ndarray, output_dir: str, sample_name: str, dpi: int = 120):
-    """Save a standalone Grad-CAM heatmap as a one-frame GIF."""
+def _save_heatmap_png(result: np.ndarray, output_dir: str, dpi: int = 120):
+    """Save a standalone Grad-CAM heatmap as ``heatmap.png``."""
     result = _minmax_normalize(result)
     os.makedirs(output_dir, exist_ok=True)
 
@@ -88,13 +88,101 @@ def _save_heatmap_gif(result: np.ndarray, output_dir: str, sample_name: str, dpi
     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     fig.tight_layout()
 
-    frame = _figure_to_rgb_array(fig)
+    fig.savefig(os.path.join(output_dir, "heatmap.png"), bbox_inches="tight", pad_inches=0.1)
     plt.close(fig)
-    imageio.mimsave(os.path.join(output_dir, f"{sample_name}.gif"), [frame], duration=0.2)
+
+
+def _format_updrs_label(label) -> str:
+    """Format a UPDRS class label for plot titles."""
+    if label is None:
+        return "na"
+    try:
+        return str(int(label))
+    except Exception:
+        return str(label)
+
+
+def _safe_path_part(value) -> str:
+    """Convert metadata values to readable filesystem-safe name parts."""
+    text = "na" if value is None else str(value)
+    text = text.strip().replace(os.sep, "_")
+    return re.sub(r"[^A-Za-z0-9_.=-]+", "_", text).strip("_") or "na"
+
+
+def _gradcam_sample_name(meta: dict, gt_label, fallback: str) -> str:
+    """Build output name: GT label + participant + sequence id."""
+    participant = meta.get("participant", meta.get("subject", meta.get("subject_id")))
+    sequence = meta.get("sequence", meta.get("seq", meta.get("seq_id", meta.get("frame_dir"))))
+    if participant is None and sequence is None:
+        return _safe_path_part(f"GroundTruth_{_format_updrs_label(gt_label)}_{fallback}")
+    return "_".join(
+        [
+            f"GroundTruth_{_safe_path_part(_format_updrs_label(gt_label))}",
+            f"participant_{_safe_path_part(participant)}",
+            f"sequence_{_safe_path_part(sequence)}",
+        ]
+    )
+
+
+def _sample_title(sample_name: str, gt_label=None, pred_label=None, score=None) -> str:
+    """Build a compact title for Parkinson/UPDRS visualizations."""
+    parts = [sample_name]
+    if gt_label is not None:
+        parts.append(f"GT UPDRS={_format_updrs_label(gt_label)}")
+    if pred_label is not None:
+        pred_text = f"Pred UPDRS={_format_updrs_label(pred_label)}"
+        if score is not None:
+            pred_text += f" ({float(score):.3f})"
+        parts.append(pred_text)
+    return " | ".join(parts)
+
+
+def _extract_batch_labels(batch):
+    """Return labels from a dataloader batch when present."""
+    if not isinstance(batch, dict) or "label" not in batch:
+        return None
+    labels = batch["label"]
+    if torch.is_tensor(labels):
+        return labels.detach().cpu().reshape(-1).tolist()
+    labels = np.asarray(labels).reshape(-1)
+    return labels.tolist()
+
+
+def _resolve_skeleton_mode(points: np.ndarray, skeleton_mode: str) -> str:
+    """Choose whether channel 3 means z-coordinate or confidence."""
+    if skeleton_mode != "auto":
+        return skeleton_mode
+    if points.shape[0] == 3:
+        return "3d"
+    return "2d"
+
+
+def _project_points(points: np.ndarray, skeleton_mode: str, projection: str):
+    """Project a skeleton sequence to 2D and return optional confidence."""
+    mode = _resolve_skeleton_mode(points, skeleton_mode)
+    if mode == "3d":
+        axes = {
+            "xy": (0, 1),
+            "xz": (0, 2),
+            "yz": (1, 2),
+        }
+        if projection not in axes:
+            raise ValueError("projection must be one of: 'xy', 'xz', 'yz'.")
+        axis_x, axis_y = axes[projection]
+        point_x = points[axis_x]
+        point_y = points[axis_y]
+        point_conf = np.ones_like(point_x, dtype=np.float32)
+        return point_x, point_y, point_conf, mode
+
+    point_x, point_y, point_conf = _split_channels(torch.from_numpy(points))
+    point_x = point_x.numpy()
+    point_y = point_y.numpy()
+    point_conf = point_conf.numpy() if point_conf is not None else np.ones_like(point_x)
+    return point_x, point_y, point_conf, mode
 
 
 def _save_importance_summary(result: np.ndarray, output_dir: str, sample_name: str, dpi: int = 120):
-    """Save a summary chart for joint/frame importance."""
+    """Save a summary chart for joint/frame importance as ``summary.png``."""
     result = _minmax_normalize(result)
     os.makedirs(output_dir, exist_ok=True)
 
@@ -129,7 +217,7 @@ def _save_importance_summary(result: np.ndarray, output_dir: str, sample_name: s
     ax_frame.set_ylabel("importance")
 
     fig.tight_layout()
-    fig.savefig(os.path.join(output_dir, f"{sample_name}_summary.png"), bbox_inches="tight", pad_inches=0.1)
+    fig.savefig(os.path.join(output_dir, "summary.png"), bbox_inches="tight", pad_inches=0.1)
     plt.close(fig)
 
 
@@ -139,10 +227,13 @@ def _save_skeleton_gif(
     layout,
     output_dir: str,
     sample_name: str,
+    title: Optional[str] = None,
     render_gif: bool = True,
     min_conf: float = 0.025,
     target_t: Optional[int] = None,
     dpi: int = 96,
+    skeleton_mode: str = "auto",
+    projection: str = "xy",
 ):
     """Render the skeleton overlay directly into a GIF without PNG intermediates."""
     result = _minmax_normalize(result)
@@ -150,14 +241,11 @@ def _save_skeleton_gif(
     if target_t is None:
         target_t = T
     result = _repeat_temporal_bins(result, target_t)
-    point_x, point_y, point_conf = _split_channels(torch.from_numpy(points))
-    point_x = point_x.numpy()
-    point_y = point_y.numpy()
-    point_conf = point_conf.numpy() if point_conf is not None else np.ones_like(point_x)
+    point_x, point_y, point_conf, resolved_mode = _project_points(points, skeleton_mode, projection)
 
-    mean_pos = np.mean(np.mean(points[:2], -1), -1)
-    all_x = points[0] - mean_pos[0]
-    all_y = mean_pos[1] - points[1]
+    mean_pos = np.asarray([np.mean(point_x), np.mean(point_y)], dtype=np.float32)
+    all_x = point_x - mean_pos[0]
+    all_y = mean_pos[1] - point_y
     xmin = np.min(all_x)
     xmax = np.max(all_x)
     ymin = np.min(all_y)
@@ -184,7 +272,8 @@ def _save_skeleton_gif(
         ax.set_ylim(cy - max_range / 2 - pad, cy + max_range / 2 + pad)
         ax.set_aspect("equal")
         ax.axis("off")
-        ax.set_title(f"frame: {t}", fontsize=14)
+        plot_title = title or sample_name
+        ax.set_title(f"{plot_title} | frame {t} | {resolved_mode.upper()} {projection.upper()}", fontsize=11)
 
         x = point_x[t, :] - mean_pos[0]
         y = mean_pos[1] - point_y[t, :]
@@ -234,6 +323,143 @@ def _save_skeleton_gif(
         imageio.mimsave(os.path.join(sample_dir, f"{sample_name}.gif"), frames, duration=0.15)
 
 
+def _set_3d_axes_equal(ax, x, y, z, pad_ratio=0.25):
+    """Set equal 3D bounds around all visible skeleton points."""
+    xmin, xmax = float(np.min(x)), float(np.max(x))
+    ymin, ymax = float(np.min(y)), float(np.max(y))
+    zmin, zmax = float(np.min(z)), float(np.max(z))
+    center = np.asarray([(xmin + xmax) / 2, (ymin + ymax) / 2, (zmin + zmax) / 2], dtype=np.float32)
+    span = max(xmax - xmin, ymax - ymin, zmax - zmin, 1e-6)
+    half = span * (0.5 + pad_ratio)
+    ax.set_xlim(center[0] - half, center[0] + half)
+    ax.set_ylim(center[1] - half, center[1] + half)
+    ax.set_zlim(center[2] - half, center[2] + half)
+    ax.set_box_aspect((1, 1, 1))
+
+
+def _flip_vertical_axis(points: np.ndarray) -> np.ndarray:
+    """Flip all three axes to match the PD-GaM render orientation."""
+    points = np.asarray(points, dtype=np.float32).copy()
+    points[..., 0] *= -1.0
+    points[..., 1] *= -1.0
+    points[..., 2] *= -1.0
+    return points
+
+
+def _set_gaitgen_view(ax, center: np.ndarray, span: float, z_center: float):
+    """Apply the PD-GaM/GAITGen camera and bounds."""
+    half = span / 2.0
+    ax.set_xlim(center[0] - half, center[0] + half)
+    ax.set_ylim(center[1] - half, center[1] + half)
+    ax.set_zlim(z_center - half, z_center + half)
+    ax.set_box_aspect((1, 1, 1))
+    ax.view_init(elev=110, azim=-90)
+    ax.dist = 7.5
+    ax.set_axis_off()
+    ax.grid(False)
+
+
+def _save_skeleton_3d_gif(
+    result: np.ndarray,
+    points: np.ndarray,
+    layout,
+    output_dir: str,
+    sample_name: str,
+    title: Optional[str] = None,
+    render_gif: bool = True,
+    target_t: Optional[int] = None,
+    dpi: int = 96,
+):
+    """Render xyz skeleton Grad-CAM overlay in true 3D space."""
+    if points.shape[0] < 3:
+        raise ValueError(f"3D rendering requires at least 3 point channels, got {points.shape[0]}")
+
+    result = _minmax_normalize(result)
+    _, T, V = points.shape
+    if target_t is None:
+        target_t = T
+    result = _repeat_temporal_bins(result, target_t)
+
+    # CARE-PD skeletons saved by PD_GaM_utils.py are already flipped into the
+    # render orientation, so keep the xyz axes as stored in the dataset.
+    points_3d = np.stack([points[0], points[1], points[2]], axis=-1)
+    all_points = points_3d.reshape(-1, 3)
+    min_v = all_points.min(axis=0)
+    max_v = all_points.max(axis=0)
+    center = (max_v + min_v) / 2.0
+    span = float(np.max(max_v - min_v))
+    span = span if span > 1e-6 else 1.0
+
+    sample_dir = os.path.join(output_dir, sample_name)
+    os.makedirs(sample_dir, exist_ok=True)
+
+    fig = plt.figure(figsize=(9, 9), dpi=dpi)
+    ax = fig.add_subplot(111, projection="3d")
+    scalar_map = plt.get_cmap("plasma")
+    norm = colors.Normalize(vmin=0, vmax=1)
+    fig.colorbar(plt.cm.ScalarMappable(cmap=scalar_map, norm=norm), ax=ax, fraction=0.04, pad=0.01)
+
+    frames = []
+    for t in range(T):
+        ax.clear()
+        _set_gaitgen_view(ax, center, span, center[2])
+        plot_title = title or sample_name
+        ax.set_title(f"{plot_title} | frame {t}", fontsize=11, pad=12)
+
+        frame_points = points_3d[t]
+        x = frame_points[:, 0]
+        y = frame_points[:, 1]
+        z = frame_points[:, 2]
+        activation = np.asarray(result[min(t, result.shape[0] - 1)], dtype=np.float32)
+
+        for v in range(V):
+            k = int(layout.connect_joint[v])
+            bone_act = float((activation[v] + activation[k]) / 2.0)
+            ax.plot(
+                [x[v], x[k]],
+                [y[v], y[k]],
+                [z[v], z[k]],
+                "-",
+                c=scalar_map(norm(bone_act)),
+                alpha=0.85,
+                linewidth=4,
+                zorder=1,
+            )
+
+        for a, b in layout.extra_bones:
+            bone_act = float((activation[a] + activation[b]) / 2.0)
+            ax.plot(
+                [x[a], x[b]],
+                [y[a], y[b]],
+                [z[a], z[b]],
+                "-",
+                c=scalar_map(norm(bone_act)),
+                alpha=0.85,
+                linewidth=4,
+                zorder=1,
+            )
+
+        node_sizes = activation * 260.0 + 45.0
+        ax.scatter(
+            x,
+            y,
+            z,
+            marker="o",
+            c=activation,
+            cmap=scalar_map,
+            norm=norm,
+            s=node_sizes,
+            depthshade=True,
+            zorder=3,
+        )
+        fig.tight_layout(pad=0.4)
+        frames.append(_figure_to_rgb_array(fig))
+
+    plt.close(fig)
+    if render_gif and frames:
+        imageio.mimsave(os.path.join(sample_dir, f"{sample_name}_3d.gif"), frames, duration=0.15)
+
+
 def _video_info_from_dataset(dataset, idx):
     """Fetch raw metadata from the underlying dataset."""
     base = dataset
@@ -249,6 +475,20 @@ def _video_info_from_dataset(dataset, idx):
     if not hasattr(base, "video_infos"):
         raise AttributeError("Dataset does not expose video_infos")
     return base.video_infos[idx]
+
+
+def _points_from_video_info(video_info):
+    """Return raw stored skeleton points as ``(C, T, V)`` when available."""
+    if not isinstance(video_info, dict) or "keypoint" not in video_info:
+        return None
+    keypoint = np.asarray(video_info["keypoint"], dtype=np.float32)
+    if keypoint.ndim == 4:
+        keypoint = keypoint.mean(axis=0)
+    if keypoint.ndim != 3:
+        return None
+    if keypoint.shape[-1] < 3:
+        return None
+    return keypoint[..., :3].transpose(2, 0, 1)
 
 
 def _reduce_spatial_dims(tensor: torch.Tensor) -> torch.Tensor:
@@ -332,6 +572,7 @@ def visualize_gradcam_batch(
     save_heatmap: bool = True,
     min_conf: float = 0.025,
     dpi: int = 96,
+    class_names: Optional[list[str]] = None,
 ):
     """Visualize Grad-CAM maps for one batch from the test loader."""
     if isinstance(batch, dict):
@@ -343,6 +584,7 @@ def visualize_gradcam_batch(
 
     if not torch.is_tensor(keypoint):
         keypoint = torch.as_tensor(keypoint)
+    batch_labels = _extract_batch_labels(batch)
 
     device = next(model.parameters()).device
     keypoint = keypoint.to(device)
@@ -359,16 +601,21 @@ def visualize_gradcam_batch(
         clips, persons, frames, _, _ = seq.shape
         seq_full = seq.permute(1, 0, 2, 3, 4).reshape(persons, clips * frames, seq.size(3), seq.size(4)).cpu()
 
-        if not meta:
-            try:
-                seq_meta = _video_info_from_dataset(dataset, batch_idx + i)
-            except Exception:
-                seq_meta = {}
-        elif isinstance(meta, (list, tuple)):
-            seq_meta = meta[i] if i < len(meta) else meta[0]
+        data_index = batch_idx * keypoint.size(0) + i
+        try:
+            raw_info = _video_info_from_dataset(dataset, data_index)
+        except Exception:
+            raw_info = {}
+
+        if isinstance(meta, (list, tuple)):
+            meta_info = meta[i] if i < len(meta) else meta[0]
         else:
-            seq_meta = meta
-        seq_dir = _sequence_name(seq_meta, sample_name)
+            meta_info = meta or {}
+        seq_meta = dict(raw_info) if isinstance(raw_info, dict) else {}
+        if isinstance(meta_info, dict):
+            seq_meta.update(meta_info)
+        gt_label = batch_labels[i] if batch_labels is not None and i < len(batch_labels) else seq_meta.get("label")
+        seq_dir = _gradcam_sample_name(seq_meta, gt_label, f"{sample_name}_{data_index:06}")
 
         logger.info(
             "Rendering sample %s: extracting features (%d clips, %d persons, %d frames/clip)",
@@ -379,40 +626,53 @@ def visualize_gradcam_batch(
         )
 
         clip_maps = []
+        clip_scores = []
 
         for clip in seq:
             with torch.enable_grad():
                 backbone_out = model.extract_feat(clip.unsqueeze(0))
                 clip_feat = _prepare_clip_feature(backbone_out)
                 clip_feat = clip_feat.requires_grad_(True)
-                activation, _scores = _compute_gradcam_maps(model, clip_feat, class_mode=class_mode)
+                activation, scores = _compute_gradcam_maps(model, clip_feat, class_mode=class_mode)
                 clip_maps.append(activation.detach())
+                clip_scores.append(scores.detach())
 
         activation = torch.cat(clip_maps, dim=1)
+        scores_np = torch.stack(clip_scores, dim=0).mean(dim=0).cpu().numpy()
+        scores_prob = np.exp(scores_np - np.max(scores_np))
+        scores_prob = scores_prob / np.sum(scores_prob)
+        pred_label = int(np.argmax(scores_prob))
+        pred_score = float(scores_prob[pred_label])
         if class_mode == "pred":
             class_map = activation[0]
         else:
             class_map = activation.max(dim=0).values
         class_map = class_map.detach().cpu().numpy()
         class_map = _minmax_normalize(class_map)
+        if class_names and pred_label < len(class_names) and str(class_names[pred_label]) != str(pred_label):
+            pred_display = f"{pred_label}:{class_names[pred_label]}"
+        else:
+            pred_display = pred_label
+        plot_title = _sample_title(seq_dir, gt_label=gt_label, pred_label=pred_display, score=pred_score)
 
         logger.info("Rendering sample %s: drawing activation overlay", seq_dir)
-        sample_points = _get_point_tensor(seq_full.unsqueeze(0))
-        summary_dir = os.path.join(output_dir, seq_dir, "summary")
-        os.makedirs(summary_dir, exist_ok=True)
-        _save_importance_summary(class_map, summary_dir, seq_dir, dpi=dpi)
+        raw_points = _points_from_video_info(raw_info)
+        sample_points = raw_points
+        if sample_points is None:
+            sample_points = _get_point_tensor(seq_full.unsqueeze(0)).numpy()
+        sample_dir = os.path.join(output_dir, seq_dir)
+        os.makedirs(sample_dir, exist_ok=True)
+        _save_importance_summary(class_map, sample_dir, seq_dir, dpi=dpi)
         if save_heatmap:
-            heatmap_dir = os.path.join(output_dir, seq_dir, "heatmap")
-            os.makedirs(heatmap_dir, exist_ok=True)
-            _save_heatmap_gif(class_map, heatmap_dir, seq_dir, dpi=dpi)
-        _save_skeleton_gif(
+            _save_heatmap_png(class_map, sample_dir, dpi=dpi)
+        _save_skeleton_3d_gif(
             class_map,
-            sample_points.numpy(),
+            sample_points,
             layout,
             output_dir=output_dir,
             sample_name=seq_dir,
+            title=plot_title,
             render_gif=render_gif,
-            min_conf=min_conf,
             dpi=dpi,
         )
 
@@ -426,6 +686,8 @@ def visualize_gradcam_test_loader(
     save_heatmap: bool = True,
     min_conf: float = 0.025,
     dpi: int = 96,
+    max_samples: Optional[int] = None,
+    class_names: Optional[list[str]] = None,
 ):
     """Run inference on the test loader and save Grad-CAM maps."""
     model.eval()
@@ -449,6 +711,8 @@ def visualize_gradcam_test_loader(
             )
             meta = batch.get("img_metas") if isinstance(batch, dict) else None
             meta = _unwrap_meta(meta)
+            if max_samples is not None and batch_idx >= max_samples:
+                break
             visualize_gradcam_batch(
                 model,
                 batch,
@@ -462,5 +726,6 @@ def visualize_gradcam_test_loader(
                 save_heatmap=save_heatmap,
                 min_conf=min_conf,
                 dpi=dpi,
+                class_names=class_names,
             )
     logger.info("Visualization completed")

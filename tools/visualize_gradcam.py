@@ -34,6 +34,13 @@ def parse_args():
     parser.add_argument("--device", default="cuda:0", help="Torch device, e.g. cuda:0 or cpu")
     parser.add_argument("--split", default="test", choices=["train", "val", "test"], help="Dataset split to visualize")
     parser.add_argument("--class-mode", default="pred", choices=["pred", "max"])
+    parser.add_argument("--max-samples", type=int, default=None, help="Maximum number of samples to visualize")
+    parser.add_argument(
+        "--class-names",
+        nargs="+",
+        default=None,
+        help="Optional class names. For CARE-PD UPDRS, use: 0 1 2 3",
+    )
     parser.add_argument("--no-gif", action="store_true", help="Only save PNG frames")
     return parser.parse_args()
 
@@ -198,6 +205,15 @@ def main():
     )
 
     logger.info("Starting visualization")
+    class_names = args.class_names
+    if class_names is None:
+        try:
+            num_classes = int(cfg.model["cls_head"]["num_classes"])
+        except Exception:
+            num_classes = None
+        if num_classes == 4:
+            class_names = ["0", "1", "2", "3"]
+
     visualize_gradcam_test_loader(
         model,
         loader,
@@ -205,6 +221,8 @@ def main():
         class_mode=args.class_mode,
         render_gif=not args.no_gif,
         save_heatmap=True,
+        max_samples=args.max_samples,
+        class_names=class_names,
     )
     logger.info("Visualization finished. Output saved to %s", output_dir)
 
