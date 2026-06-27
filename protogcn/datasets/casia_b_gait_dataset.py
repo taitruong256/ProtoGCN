@@ -36,16 +36,82 @@ class CasiaBGaitDataset(BaseDataset):
                  probe_nm_sequences=('05', '06'),
                  probe_conditions=('bg', 'cl'),
                  min_frames=1,
+                 mini_views=None,
+                 mini_subject_ratio=None,
                  **kwargs):
         self.gallery_conditions = set(gallery_conditions)
         self.gallery_sequences = set(gallery_sequences)
         self.probe_conditions = set(probe_conditions)
         self.probe_nm_sequences = set(probe_nm_sequences)
         self.min_frames = min_frames
+        self.mini_views = mini_views
+        self.mini_subject_ratio = mini_subject_ratio
         super().__init__(ann_file, pipeline, start_index=0, modality='Pose', **kwargs)
 
         logger = get_root_logger()
         logger.info(f'{len(self)} CASIA-B gait sequences loaded')
+
+    @staticmethod
+    def _normalize_scalar(value):
+        if isinstance(value, (list, tuple, np.ndarray)):
+            if len(value) == 0:
+                raise ValueError('Cannot normalize an empty value list.')
+            value = value[0]
+        if hasattr(value, 'item'):
+            try:
+                value = value.item()
+            except Exception:
+                pass
+        if isinstance(value, str):
+            value = value.strip()
+            if value.isdigit() or (value.startswith('-') and value[1:].isdigit()):
+                return int(value)
+            return int(float(value))
+        return int(value)
+
+    def _resolve_views(self, available_views):
+        if self.mini_views is None:
+            return None
+
+        requested_views = [self._normalize_scalar(v) for v in self.mini_views]
+        available_views = sorted({self._normalize_scalar(v) for v in available_views})
+        if not available_views:
+            return set()
+
+        exact_match = [v for v in requested_views if v in available_views]
+        if len(exact_match) == len(requested_views):
+            return set(exact_match)
+
+        mapped_views = []
+        for view in requested_views:
+            mapped_views.append(
+                min(available_views, key=lambda candidate: (abs(candidate - view), candidate)))
+        mapped_views = sorted(set(mapped_views))
+
+        logger = get_root_logger()
+        logger.info(
+            'Requested mini views %s are not all present in the annotation. '
+            'Using nearest available CASIA-B views %s instead.',
+            requested_views, mapped_views)
+        return set(mapped_views)
+
+    def _select_subjects(self, available_subjects):
+        if self.mini_subject_ratio is None:
+            return None
+
+        ratio = float(self.mini_subject_ratio)
+        if not (0 < ratio <= 1):
+            raise ValueError(f'mini_subject_ratio must be in (0, 1], got {ratio}')
+
+        available_subjects = sorted({self._normalize_scalar(v) for v in available_subjects})
+        target_count = int(len(available_subjects) * ratio)
+        if target_count <= 0:
+            return set()
+        if target_count >= len(available_subjects):
+            return set(available_subjects)
+
+        selected_idx = np.linspace(0, len(available_subjects) - 1, target_count, dtype=int)
+        return {available_subjects[i] for i in selected_idx}
 
     def load_annotations(self):
         assert self.ann_file.endswith('.csv')
@@ -73,6 +139,12 @@ class CasiaBGaitDataset(BaseDataset):
                     np.array(keypoint_score, dtype=np.float32),
                     subject, condition, sequence, view))
 
+        available_subjects = [frames[0][3] for frames in grouped.values() if frames]
+        selected_subjects = self._select_subjects(available_subjects)
+
+        available_views = [frames[0][6] for frames in grouped.values() if frames]
+        selected_views = self._resolve_views(available_views)
+
         data = []
         for seq_name, frames in sorted(grouped.items()):
             if len(frames) < self.min_frames:
@@ -83,6 +155,10 @@ class CasiaBGaitDataset(BaseDataset):
             condition = condition[0]
             sequence = sequence[0]
             view = view[0]
+            if selected_subjects is not None and self._normalize_scalar(subject) not in selected_subjects:
+                continue
+            if selected_views is not None and self._normalize_scalar(view) not in selected_views:
+                continue
             gait_role = self._get_gait_role(condition, sequence)
             if self.test_mode and gait_role == 'ignore':
                 continue
