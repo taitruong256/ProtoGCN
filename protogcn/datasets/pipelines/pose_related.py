@@ -453,7 +453,7 @@ class JointToBone:
     def __init__(self, dataset='nturgb+d', target='keypoint'):
         self.dataset = dataset
         self.target = target
-        if self.dataset not in ['nturgb+d', 'openpose', 'openpose_new', 'coco', 'coco_new']:
+        if self.dataset not in ['nturgb+d', 'openpose', 'openpose_new', 'coco', 'coco_new', 'smpl_24']:
             raise ValueError(
                 f'The dataset type {self.dataset} is not supported')
         if self.dataset == 'nturgb+d':
@@ -472,6 +472,15 @@ class JointToBone:
         elif self.dataset == 'coco_new':
             self.pairs = ((0, 19), (1, 0), (2, 0), (3, 1), (4, 2), (5, 19), (6, 19), (7, 5), (8, 6), (9, 7), (10, 8),
                           (11, 17), (12, 17), (13, 11), (14, 12), (15, 13), (16, 14), (17, 18), (18, 19), (19, 19))
+        elif self.dataset == 'smpl_24':
+            self.pairs = (
+                (0, 0), (1, 0), (2, 0), (3, 0),
+                (4, 1), (5, 2), (6, 3),
+                (7, 4), (8, 5), (9, 6),
+                (10, 7), (11, 8), (12, 9),
+                (13, 9), (14, 9),
+                (15, 12), (16, 13), (17, 14),
+                (18, 16), (19, 17), (20, 18), (21, 19), (22, 20), (23, 21))
 
     def __call__(self, results):
 
@@ -496,7 +505,7 @@ class JointToKB:
     def __init__(self, dataset='nturgb+d', target='keypoint'):
         self.dataset = dataset
         self.target = target
-        if self.dataset not in ['nturgb+d', 'openpose', 'openpose_new', 'coco', 'coco_new']:
+        if self.dataset not in ['nturgb+d', 'openpose', 'openpose_new', 'coco', 'coco_new', 'smpl_24']:
             raise ValueError(
                 f'The dataset type {self.dataset} is not supported')
         if self.dataset == 'nturgb+d':
@@ -515,6 +524,15 @@ class JointToKB:
         elif self.dataset == 'coco_new':
             self.pairs = ((0, 0), (1, 19), (2, 19), (3, 0), (4, 0), (5, 5), (6, 6), (7, 19), (8, 19), (9, 5), 
                           (10, 6),(11, 18), (12, 18), (13, 17), (14, 17), (15, 11), (16, 12), (17, 19), (18, 18), (19, 19))
+        elif self.dataset == 'smpl_24':
+            self.pairs = (
+                (0, 0), (1, 0), (2, 0), (3, 0),
+                (4, 0), (5, 0), (6, 0),
+                (7, 1), (8, 2), (9, 3),
+                (10, 4), (11, 5), (12, 6),
+                (13, 6), (14, 6),
+                (15, 9), (16, 9), (17, 9),
+                (18, 13), (19, 14), (20, 16), (21, 17), (22, 18), (23, 19))
 
     def __call__(self, results):
 
