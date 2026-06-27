@@ -4,6 +4,7 @@ import os.path as osp
 import time
 import torch
 import torch.distributed as dist
+from fvcore.nn import FlopCountAnalysis, parameter_count
 from mmcv.engine import multi_gpu_test
 from mmcv.parallel import MMDistributedDataParallel
 from mmcv.runner import DistSamplerSeedHook, EpochBasedRunner, OptimizerHook, build_optimizer, get_dist_info
@@ -41,6 +42,49 @@ def init_random_seed(seed=None, device='cuda'):
 
     dist.broadcast(random_num, src=0)
     return random_num.item()
+
+
+class _ComplexityWrapper(torch.nn.Module):
+    """Wrap the recognizer so FLOPs are measured on tensor inputs only."""
+
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+
+    def forward(self, keypoint):
+        if keypoint.dim() == 6 and keypoint.size(1) == 1:
+            keypoint = keypoint[:, 0]
+        x, _ = self.model.extract_feat(keypoint)
+        if self.model.with_cls_head:
+            x = self.model.cls_head(x)
+        return x
+
+
+def _log_model_complexity(model, data_loader, logger, device):
+    """Log exact parameter count and FLOPs for one real batch."""
+    batch = next(iter(data_loader))
+    if 'keypoint' not in batch:
+        raise KeyError('Batch does not contain `keypoint`, cannot compute FLOPs.')
+
+    keypoint = batch['keypoint']
+    if torch.is_tensor(keypoint):
+        keypoint = keypoint.to(device)
+    else:
+        raise TypeError(f'Unsupported keypoint type for FLOPs analysis: {type(keypoint)}')
+
+    if keypoint.size(0) < 1:
+        raise ValueError('Keypoint batch is empty, cannot compute FLOPs.')
+
+    sample_keypoint = keypoint[:1]
+    complexity_model = _ComplexityWrapper(model).to(device).eval()
+    params = parameter_count(complexity_model)['']
+    with torch.no_grad():
+        flops = FlopCountAnalysis(complexity_model, sample_keypoint).total()
+
+    logger.info('Model complexity summary')
+    logger.info('  parameters: %d', params)
+    logger.info('  flops_per_sample: %d', flops)
+    return params, flops
 
 
 def train_model(model,
@@ -81,6 +125,13 @@ def train_model(model,
     data_loaders = [
         build_dataloader(ds, **dataloader_setting) for ds in dataset
     ]
+
+    rank, world_size = get_dist_info()
+    if rank == 0:
+        device = torch.device('cuda', torch.cuda.current_device()) if torch.cuda.is_available() else torch.device('cpu')
+        _log_model_complexity(model, data_loaders[0], logger, device)
+    if dist.is_available() and dist.is_initialized() and world_size > 1:
+        dist.barrier()
 
     # put model on gpus
     find_unused_parameters = cfg.get('find_unused_parameters', True)
