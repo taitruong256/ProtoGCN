@@ -60,6 +60,54 @@ class _ComplexityWrapper(torch.nn.Module):
         return x
 
 
+def _count_params(module):
+    return sum(p.numel() for p in module.parameters())
+
+
+def _log_module_tree(module, logger, prefix='', depth=0):
+    """Recursively log a readable module tree with parameter counts."""
+    children = list(module.named_children())
+    indent = '  ' * depth
+    cls_name = module.__class__.__name__
+    params = _count_params(module)
+
+    if prefix:
+        logger.info('%s%s: %s | params=%d', indent, prefix, cls_name, params)
+    else:
+        logger.info('%s%s | params=%d', indent, cls_name, params)
+
+    for name, child in children:
+        _log_module_tree(child, logger, name, depth + 1)
+
+
+def _log_branch_params(model, logger):
+    """Log parameter totals for spatial and temporal branches separately."""
+    backbone = getattr(model, 'backbone', None)
+    if backbone is None or not hasattr(backbone, 'gcn'):
+        logger.info('Branch parameter breakdown skipped: backbone.gcn not found.')
+        return
+
+    spatial_params = 0
+    temporal_params = 0
+    residual_params = 0
+
+    for idx, block in enumerate(backbone.gcn):
+        if hasattr(block, 'gcn'):
+            spatial_params += _count_params(block.gcn)
+        if hasattr(block, 'tcn'):
+            temporal_params += _count_params(block.tcn)
+        if hasattr(block, 'residual') and isinstance(block.residual, torch.nn.Module):
+            residual_params += _count_params(block.residual)
+
+    other_params = _count_params(backbone) - spatial_params - temporal_params - residual_params
+
+    logger.info('Branch parameter breakdown')
+    logger.info('  spatial_gcn_params: %d', spatial_params)
+    logger.info('  temporal_tcn_params: %d', temporal_params)
+    logger.info('  residual_params: %d', residual_params)
+    logger.info('  other_backbone_params: %d', other_params)
+
+
 def _log_model_complexity(model, data_loader, logger, device):
     """Log exact parameter count and FLOPs for one real batch."""
     batch = next(iter(data_loader))
@@ -82,8 +130,11 @@ def _log_model_complexity(model, data_loader, logger, device):
         flops = FlopCountAnalysis(complexity_model, sample_keypoint).total()
 
     logger.info('Model complexity summary')
+    logger.info('Model layer tree')
+    _log_module_tree(model, logger)
     logger.info('  parameters: %d', params)
     logger.info('  flops_per_sample: %d', flops)
+    _log_branch_params(model, logger)
     return params, flops
 
 
