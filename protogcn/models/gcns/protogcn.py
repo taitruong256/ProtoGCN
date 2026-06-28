@@ -165,7 +165,7 @@ class ProtoGCN(nn.Module):
         self.bn = build_norm_layer(norm_cfg, out_channels)[1]
         self.relu = nn.ReLU()
         
-        dim = 384   # base_channels * 4
+        dim = self.base_channels * 4 
         self.prn = Prototype_Reconstruction_Network(dim, num_prototype)
         
     def init_weights(self):

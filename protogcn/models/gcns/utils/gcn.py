@@ -17,6 +17,7 @@ class unit_gcn(nn.Module):
                  ratio=0.125,
                  intra_act='softmax',
                  inter_act='tanh',
+                 use_view=True,
                  use_euclid=True,
                  euclid_scale=1.0,
                  view_scale=1.0,
@@ -39,21 +40,23 @@ class unit_gcn(nn.Module):
         self.act = build_activation_layer(self.act_cfg)
         self.intra_act = intra_act
         self.inter_act = inter_act
+        self.use_view = use_view
         self.use_euclid = use_euclid
         self.euclid_scale = nn.Parameter(torch.tensor(float(euclid_scale)))
-        self.view_scale = nn.Parameter(torch.tensor(float(view_scale)))
         self.euclid_tau = nn.Parameter(torch.tensor(float(euclid_tau)))
+        self.view_scale = nn.Parameter(torch.tensor(float(view_scale))) if use_view else None
 
         self.A = nn.Parameter(A.clone())
         self.pre = nn.Sequential(
             nn.Conv2d(in_channels, mid_channels * num_subsets, 1),
             build_norm_layer(self.norm_cfg, mid_channels * num_subsets)[1], self.act)
         self.post = nn.Conv2d(mid_channels * num_subsets, out_channels, 1)
-        self.view_conv = nn.Conv2d(in_channels, mid_channels * num_subsets, 1)
-        self.view_gap = nn.AdaptiveAvgPool2d(1)
-        self.view_fc = nn.Linear(mid_channels * num_subsets, view_num)
-        self.view_softmax = nn.Softmax(dim=-1)
-        self.view_mats = nn.Parameter(A.clone().unsqueeze(0).repeat(view_num, 1, 1, 1))
+        if self.use_view:
+            self.view_conv = nn.Conv2d(in_channels, mid_channels * num_subsets, 1)
+            self.view_gap = nn.AdaptiveAvgPool2d(1)
+            self.view_fc = nn.Linear(mid_channels * num_subsets, view_num)
+            self.view_softmax = nn.Softmax(dim=-1)
+            self.view_mats = nn.Parameter(A.clone().unsqueeze(0).repeat(view_num, 1, 1, 1))
 
         self.tanh = nn.Tanh()
         self.relu = nn.ReLU()
@@ -77,21 +80,28 @@ class unit_gcn(nn.Module):
         
         n, c, t, v = x.shape
         res = self.down(x)
-        # Predict view logits from the current feature map.
-        view_feat = self.view_gap(self.view_conv(x)).view(n, -1)
-        view_logits = self.view_fc(view_feat)
-        view_prob = self.view_softmax(view_logits)
-        self.last_view_logits = view_logits
-        self.last_view_prob = view_prob
+        view_prob = None
+        if self.use_view:
+            # Predict view logits from the current feature map.
+            view_feat = self.view_gap(self.view_conv(x)).view(n, -1)
+            view_logits = self.view_fc(view_feat)
+            view_prob = self.view_softmax(view_logits)
+            self.last_view_logits = view_logits
+            self.last_view_prob = view_prob
+        else:
+            self.last_view_logits = None
+            self.last_view_prob = None
 
         # K V V
         A = self.A
         # 1 K 1 1 V V
         A = A[None, :, None, None] 
         # N K V V -> N K 1 1 V V
-        A_view = torch.einsum('nv,vkxy->nkxy', view_prob, self.view_mats)
-        A_view = A_view[:, :, None, None]
-        A = A + self.view_scale * A_view
+        A_view = None
+        if self.use_view:
+            A_view = torch.einsum('nv,vkxy->nkxy', view_prob, self.view_mats)
+            A_view = A_view[:, :, None, None]
+            A = A + self.view_scale * A_view
 
         euclid_graph = None
         if self.use_euclid:
@@ -150,7 +160,8 @@ class unit_gcn(nn.Module):
         """
         
         get_gcl_graph = graph_list[0] + graph_list[1]
-        get_gcl_graph = get_gcl_graph + self.view_scale * A_view
+        if A_view is not None:
+            get_gcl_graph = get_gcl_graph + self.view_scale * A_view
         if euclid_graph is not None:
             get_gcl_graph = get_gcl_graph + euclid_graph
         # N K C 1 V V -> N K C V V

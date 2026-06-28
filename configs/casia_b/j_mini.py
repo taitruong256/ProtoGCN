@@ -1,7 +1,7 @@
 modality = 'j'
 graph = 'coco'
 num_classes = 74 
-work_dir = f'./work_dirs/casia_b/j_mini'
+work_dir = f'./work_dirs/casia_b/j_mini_6_stage_64_channel_test_2'
 
 model = dict(
     type='RecognizerGCN',
@@ -10,10 +10,15 @@ model = dict(
         in_channels=3,
         num_prototype=300,
         view_num=11,
+        base_channels=64, 
+        num_stages=6,
+        inflate_stages=[3, 5],
+        down_stages=[3, 5],
+        gcn_use_view=False,
+        gcn_use_euclid=False,
         tcn_ms_cfg=[(3, 1), (3, 2), (3, 3), (3, 4), ('max', 3), '1x1'],
         graph_cfg=dict(layout=graph, mode='random', num_filter=8, init_off=.04, init_std=.02)),
-    cls_head=dict(type='SimpleHead', joint_cfg=graph, num_classes=num_classes, in_channels=384, weight=0.2),
-    view_loss_weight=1.0,
+    cls_head=dict(type='SimpleHead', joint_cfg=graph, num_classes=num_classes, in_channels=256, weight=0.2),
     test_cfg=dict(feat_ext=True, pool_opt='nmtv'))
 
 dataset_type = 'CasiaBGaitDataset'

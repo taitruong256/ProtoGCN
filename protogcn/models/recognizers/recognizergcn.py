@@ -122,7 +122,7 @@ class RecognizerGCN(BaseRecognizer):
 
         view_logits = getattr(self.backbone, 'view_logits', None)
         if view_logits is None:
-            raise RuntimeError('Backbone did not produce view logits. Check unit_gcn/view_num configuration.')
+            return losses
 
         view_label = self._extract_view_labels(kwargs.get('img_metas'), device=gt_label.device)
         if view_label is None:
