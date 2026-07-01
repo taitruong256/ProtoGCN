@@ -23,7 +23,14 @@ def _shape(x):
 
 class GCN_Block(nn.Module):
 
-    def __init__(self, in_channels, out_channels, A, stride=1, residual=True, **kwargs):
+    def __init__(self,
+                 in_channels,
+                 out_channels,
+                 A,
+                 stride=1,
+                 residual=True,
+                 reduction=4,
+                 **kwargs):
         super().__init__()
         common_args = ['act', 'norm', 'g1x1']
         for arg in common_args:
@@ -38,7 +45,20 @@ class GCN_Block(nn.Module):
         kwargs = {k: v for k, v in kwargs.items() if k[1:4] != 'cn_'}
         assert len(kwargs) == 0
 
-        self.gcn = unit_gcn(in_channels, out_channels, A, **gcn_kwargs)
+        if reduction < 1:
+            raise ValueError(f'reduction must be >= 1, got {reduction}')
+
+        self.reduction = reduction
+        self.bottleneck_channels = max(out_channels // reduction, 1)
+        norm = 'BN'
+        norm_cfg = norm if isinstance(norm, dict) else dict(type=norm)
+
+        self.conv_down = nn.Conv2d(in_channels, self.bottleneck_channels, kernel_size=1)
+        self.bn_down = build_norm_layer(norm_cfg, self.bottleneck_channels)[1]
+        self.conv_up = nn.Conv2d(self.bottleneck_channels, out_channels, kernel_size=1)
+        self.bn_up = build_norm_layer(norm_cfg, out_channels)[1]
+
+        self.gcn = unit_gcn(self.bottleneck_channels, self.bottleneck_channels, A, **gcn_kwargs)
         self.tcn = mstcn(out_channels, out_channels, stride=stride, **tcn_kwargs)
         self.relu = nn.ReLU()
 
@@ -53,12 +73,14 @@ class GCN_Block(nn.Module):
         """Defines the computation performed at every call."""
         logger.debug("GCN_Block.forward: in=%s", _shape(x))
         res = self.residual(x)
+        x = self.relu(self.bn_down(self.conv_down(x)))
         x, gcl_graph = self.gcn(x, A)
         logger.debug(
-            "GCN_Block.forward: mstcn_in=%s residual=%s",
+            "GCN_Block.forward: gcn_out=%s residual=%s",
             _shape(x),
             _shape(res),
         )
+        x = self.relu(self.bn_up(self.conv_up(x)))
         tcn_out = self.tcn(x)
         logger.debug("GCN_Block.forward: mstcn_out=%s", _shape(tcn_out))
         x = tcn_out + res
