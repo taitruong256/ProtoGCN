@@ -1,6 +1,6 @@
 graph = 'coco'
 num_classes = 74
-work_dir = f'./work_dirs/casia_b/fusion_new'
+work_dir = f'./work_dirs/casia_b/fusion_new_bottleneck'
 
 # Early multi-branch fusion
 feats = ['j', 'b', 'k', 'jm']
@@ -10,21 +10,21 @@ model = dict(
     backbone=dict(
         type='ProtoGCN',
         in_channels=12,
-        base_channels=64,
-        num_stages=4,
-        inflate_stages=[1, 3],
-        down_stages=[1, 3],
+        base_channels=96,
+        num_stages=6,
+        inflate_stages=[1, 4],
+        down_stages=[1, 4],
         gcn_use_view=False,
         gcn_use_euclid=False,
         num_prototype=300,
-        view_num=11,
         multi_branch=True,
-        multi_branch_stages=2,
+        multi_branch_stages=3,
         branch_in_channels=3,
+        use_bottleneck=True,
+        block_variant='split_residual_v1',
         tcn_ms_cfg=[(3, 1), (3, 2), (3, 3), (3, 4), ('max', 3), '1x1'],
         graph_cfg=dict(layout=graph, mode='random', num_filter=8, init_off=.04, init_std=.02)),
-    cls_head=dict(type='SimpleHead', joint_cfg=graph, num_classes=num_classes, in_channels=256, weight=0.2),
-    view_loss_weight=1.0,
+    cls_head=dict(type='SimpleHead', joint_cfg=graph, num_classes=num_classes, in_channels=384, weight=0.2),
     test_cfg=dict(feat_ext=True, pool_opt='nmtv'))
 
 dataset_type = 'CasiaBGaitDataset'

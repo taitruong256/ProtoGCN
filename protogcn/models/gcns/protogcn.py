@@ -30,6 +30,7 @@ class GCN_Block(nn.Module):
                  stride=1,
                  residual=True,
                  reduction=4,
+                 use_bottleneck=True,
                  **kwargs):
         super().__init__()
         common_args = ['act', 'norm', 'g1x1']
@@ -48,18 +49,20 @@ class GCN_Block(nn.Module):
         if reduction < 1:
             raise ValueError(f'reduction must be >= 1, got {reduction}')
 
+        self.use_bottleneck = use_bottleneck
         self.reduction = reduction
         self.bottleneck_channels = max(out_channels // reduction, 1)
+        self.inner_channels = self.bottleneck_channels if self.use_bottleneck else out_channels
         norm = 'BN'
         norm_cfg = norm if isinstance(norm, dict) else dict(type=norm)
 
-        self.conv_down = nn.Conv2d(in_channels, self.bottleneck_channels, kernel_size=1)
-        self.bn_down = build_norm_layer(norm_cfg, self.bottleneck_channels)[1]
-        self.conv_up = nn.Conv2d(self.bottleneck_channels, out_channels, kernel_size=1)
+        self.conv_down = nn.Conv2d(in_channels, self.inner_channels, kernel_size=1)
+        self.bn_down = build_norm_layer(norm_cfg, self.inner_channels)[1]
+        self.conv_up = nn.Conv2d(self.inner_channels, out_channels, kernel_size=1) if self.use_bottleneck else nn.Identity()
         self.bn_up = build_norm_layer(norm_cfg, out_channels)[1]
 
-        self.gcn = unit_gcn(self.bottleneck_channels, self.bottleneck_channels, A, **gcn_kwargs)
-        self.tcn = mstcn(out_channels, out_channels, stride=stride, **tcn_kwargs)
+        self.gcn = unit_gcn(self.inner_channels, self.inner_channels, A, **gcn_kwargs)
+        self.tcn = mstcn(self.inner_channels, self.inner_channels, stride=stride, **tcn_kwargs)
         self.relu = nn.ReLU()
 
         if not residual:
@@ -69,22 +72,45 @@ class GCN_Block(nn.Module):
         else:
             self.residual = unit_tcn(in_channels, out_channels, kernel_size=1, stride=stride)
 
+        if not residual:
+            self.residual_gcn = lambda x: 0
+            self.residual_tcn = lambda x: 0
+        else:
+            self.residual_gcn = lambda x: x
+            if stride == 1:
+                self.residual_tcn = lambda x: x
+            else:
+                self.residual_tcn = unit_tcn(
+                    self.inner_channels,
+                    self.inner_channels,
+                    kernel_size=1,
+                    stride=stride,
+                )
+
     def forward(self, x, A=None):
         """Defines the computation performed at every call."""
         logger.debug("GCN_Block.forward: in=%s", _shape(x))
         res = self.residual(x)
         x = self.relu(self.bn_down(self.conv_down(x)))
+        res_gcn = self.residual_gcn(x)
         x, gcl_graph = self.gcn(x, A)
         logger.debug(
-            "GCN_Block.forward: gcn_out=%s residual=%s",
+            "GCN_Block.forward: gcn_out=%s residual=%s res_gcn=%s",
             _shape(x),
             _shape(res),
+            _shape(res_gcn),
         )
-        x = self.relu(self.bn_up(self.conv_up(x)))
-        tcn_out = self.tcn(x)
-        logger.debug("GCN_Block.forward: mstcn_out=%s", _shape(tcn_out))
-        x = tcn_out + res
-        out = self.relu(x)
+        tcn_in = x + res_gcn
+        tcn_out = self.tcn(tcn_in)
+        res_tcn = self.residual_tcn(tcn_in)
+        logger.debug(
+            "GCN_Block.forward: mstcn_out=%s res_tcn=%s",
+            _shape(tcn_out),
+            _shape(res_tcn),
+        )
+        x = self.relu(tcn_out + res_tcn)
+        x = self.bn_up(self.conv_up(x))
+        out = self.relu(x + res)
         logger.debug("GCN_Block.forward: out=%s graph=%s", _shape(out), _shape(gcl_graph))
         return out, gcl_graph
 
@@ -129,6 +155,8 @@ class ProtoGCN(nn.Module):
                  multi_branch=False,
                  multi_branch_stages=2,
                  branch_in_channels=3,
+                 use_bottleneck=True,
+                 block_variant='legacy',
                  **kwargs):
         super().__init__()
 
@@ -138,8 +166,11 @@ class ProtoGCN(nn.Module):
         self.multi_branch = multi_branch
         self.multi_branch_stages = multi_branch_stages
         self.branch_in_channels = branch_in_channels
+        self.use_bottleneck = use_bottleneck
+        self.block_variant = block_variant
         self.kwargs = kwargs
         self.num_person = num_person
+        logger.info('ProtoGCN block_variant: %s | use_bottleneck=%s', self.block_variant, self.use_bottleneck)
 
         if self.multi_branch:
             if in_channels % branch_in_channels != 0:
@@ -180,12 +211,27 @@ class ProtoGCN(nn.Module):
             shared_stage_kwargs = _expand_stage_kwargs(num_stages)
             branch_stage_kwargs = _expand_stage_kwargs(self.multi_branch_stages)
             self.branch_stem = nn.ModuleList([
-                GCN_Block(branch_in_channels, base_channels, A.clone(), 1, residual=False, **cp.deepcopy(self.stem_kwargs))
+                GCN_Block(
+                    branch_in_channels,
+                    base_channels,
+                    A.clone(),
+                    1,
+                    residual=False,
+                    use_bottleneck=self.use_bottleneck,
+                    **cp.deepcopy(self.stem_kwargs),
+                )
                 for _ in range(self.branch_num)
             ])
             self.branch_gcn = nn.ModuleList([
                 nn.ModuleList([
-                    GCN_Block(base_channels, base_channels, A.clone(), 1, **branch_stage_kwargs[i])
+                    GCN_Block(
+                        base_channels,
+                        base_channels,
+                        A.clone(),
+                        1,
+                        use_bottleneck=self.use_bottleneck,
+                        **branch_stage_kwargs[i],
+                    )
                     for i in range(self.multi_branch_stages)
                 ])
                 for _ in range(self.branch_num)
@@ -199,14 +245,33 @@ class ProtoGCN(nn.Module):
                     inflate_times += 1
                 out_c = int(self.base_channels * self.ch_ratio ** inflate_times + EPS)
                 base_channels = out_c
-                modules.append(GCN_Block(in_c, out_c, A.clone(), stride, **shared_stage_kwargs[i - 1]))
+                modules.append(
+                    GCN_Block(
+                        in_c,
+                        out_c,
+                        A.clone(),
+                        stride,
+                        use_bottleneck=self.use_bottleneck,
+                        **shared_stage_kwargs[i - 1],
+                    )
+                )
             self.num_stages = num_stages
             self.gcn = nn.ModuleList(modules)
         else:
             lw_kwargs = _expand_stage_kwargs(num_stages)
             modules = []
             if self.in_channels != self.base_channels:
-                modules = [GCN_Block(in_channels, base_channels, A.clone(), 1, residual=False, **lw_kwargs[0])]
+                modules = [
+                    GCN_Block(
+                        in_channels,
+                        base_channels,
+                        A.clone(),
+                        1,
+                        residual=False,
+                        use_bottleneck=self.use_bottleneck,
+                        **lw_kwargs[0],
+                    )
+                ]
 
             inflate_times = 0
             down_times = 0
@@ -217,7 +282,16 @@ class ProtoGCN(nn.Module):
                     inflate_times += 1
                 out_channels = int(self.base_channels * self.ch_ratio ** inflate_times + EPS)
                 base_channels = out_channels
-                modules.append(GCN_Block(in_channels, out_channels, A.clone(), stride, **lw_kwargs[i - 1]))
+                modules.append(
+                    GCN_Block(
+                        in_channels,
+                        out_channels,
+                        A.clone(),
+                        stride,
+                        use_bottleneck=self.use_bottleneck,
+                        **lw_kwargs[i - 1],
+                    )
+                )
                 down_times += (i in down_stages)
 
             if self.in_channels == self.base_channels:
@@ -226,17 +300,27 @@ class ProtoGCN(nn.Module):
             self.num_stages = num_stages
             self.gcn = nn.ModuleList(modules)
         self.pretrained = pretrained
-        
-        out_channels = base_channels
+
+        def _infer_graph_channels(block):
+            if not hasattr(block, 'gcn'):
+                raise AttributeError('Expected GCN_Block to expose a `gcn` module.')
+            return block.gcn.num_subsets * block.gcn.mid_channels
+
+        if self.multi_branch:
+            graph_channels = _infer_graph_channels(self.gcn[-1])
+        else:
+            if len(self.gcn) == 0:
+                raise RuntimeError('ProtoGCN requires at least one GCN block to build the prototype module.')
+            graph_channels = _infer_graph_channels(self.gcn[-1])
+
         norm = 'BN'
         norm_cfg = norm if isinstance(norm, dict) else dict(type=norm)
         
-        self.post = nn.Conv2d(out_channels, out_channels, 1)
-        self.bn = build_norm_layer(norm_cfg, out_channels)[1]
+        self.post = nn.Conv2d(graph_channels, graph_channels, 1)
+        self.bn = build_norm_layer(norm_cfg, graph_channels)[1]
         self.relu = nn.ReLU()
         
-        dim = out_channels
-        self.prn = Prototype_Reconstruction_Network(dim, num_prototype)
+        self.prn = Prototype_Reconstruction_Network(graph_channels, num_prototype)
 
     def _build_data_bn(self, num_person, channels, num_joints):
         if self.data_bn_type == 'MVC':
@@ -327,22 +411,32 @@ class ProtoGCN(nn.Module):
                 logger.debug("ProtoGCN.forward: stage=%d x=%s graph=%s", i, _shape(x), _shape(gcl_graph))
         
         x = x.reshape((N, M) + x.shape[1:])
-        c_graph = x.size(2)
-        logger.debug("ProtoGCN.forward: reshaped_back=%s channels=%d", _shape(x), c_graph)
-        
+        logger.debug("ProtoGCN.forward: reshaped_back=%s", _shape(x))
+
+        if len(get_graph) == 0:
+            raise RuntimeError('ProtoGCN.forward expected at least one graph tensor, but none was produced.')
+
         graph = get_graph[-1]
-        # N C V V -> N C V*V
-        graph = graph.view(N, M, c_graph, V, V).mean(1).view(N, c_graph, V * V)
+        graph_channels = graph.size(1)
+        logger.debug(
+            "ProtoGCN.forward: last_graph_raw=%s graph_channels=%d",
+            _shape(graph),
+            graph_channels,
+        )
+
+        # Graph tensors are produced per sample/person as N*M x C x V x V.
+        # Pool person dimension first, then flatten the joint-pair dimension.
+        graph = graph.view(N, M, graph_channels, V, V).mean(1).reshape(N, graph_channels, V * V)
         logger.debug("ProtoGCN.forward: last_graph_pool=%s", _shape(graph))
         
         the_graph_list = []
         for i in range(N):
             # V*V C
-            the_graph = graph[i].permute(1, 0)
+            the_graph = graph[i].permute(1, 0).contiguous()
             # V*V C
             the_graph = self.prn(the_graph)
             # C V V
-            the_graph = the_graph.permute(1, 0).view(c_graph, V, V)
+            the_graph = the_graph.permute(1, 0).contiguous().view(graph_channels, V, V)
             the_graph_list.append(the_graph)
         
         # N C V V
