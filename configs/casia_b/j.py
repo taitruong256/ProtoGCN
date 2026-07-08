@@ -1,6 +1,7 @@
 modality = 'j'
 graph = 'coco'
-work_dir = f'./work_dirs/casia_b/j_triplet'
+num_classes = 74
+work_dir = f'./work_dirs/casia_b/j_protogcn_triplet_csc'
 auto_resume = False
 log_model_complexity = False
 
@@ -17,7 +18,7 @@ model = dict(
         block_variant='split_residual_v1',
         tcn_ms_cfg=[(3, 1), (3, 2), (3, 3), (3, 4), ('max', 3), '1x1'],
         graph_cfg=dict(layout=graph, mode='random', num_filter=8, init_off=.04, init_std=.02)),
-    cls_head=None,
+    cls_head=dict(type='SimpleHead', joint_cfg=graph, num_classes=num_classes, in_channels=256, weight=0.2),
     train_cfg=dict(
         triplet_loss=dict(type='TripletLoss', margin=0.3, is_hard_loss=True)),
     test_cfg=dict(feat_ext=True, pool_opt='nmtv'))
@@ -52,12 +53,11 @@ data = dict(
     videos_per_gpu=128,
     workers_per_gpu=0,
     train_dataloader=dict(
-        pin_memory=False,
         triplet_sampler=dict(
             batch_size=[4, 32],
             batch_shuffle=False)),
-    val_dataloader=dict(videos_per_gpu=1, pin_memory=False),
-    test_dataloader=dict(videos_per_gpu=1, pin_memory=False),
+    val_dataloader=dict(videos_per_gpu=1),
+    test_dataloader=dict(videos_per_gpu=1),
     train=dict(type=dataset_type, ann_file=train_ann_file, pipeline=train_pipeline),
     val=dict(type=dataset_type, ann_file=val_ann_file, pipeline=val_pipeline),
     test=dict(type=dataset_type, ann_file=test_ann_file, pipeline=test_pipeline))

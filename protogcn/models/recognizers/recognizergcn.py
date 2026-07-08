@@ -79,10 +79,10 @@ class RecognizerGCN(BaseRecognizer):
         self.view_label_key = view_label_key
         super().__init__(backbone, cls_head=cls_head, train_cfg=train_cfg, test_cfg=test_cfg)
         self.view_loss = nn.CrossEntropyLoss() if self.with_cls_head else None
-        triplet_loss_cfg = self.train_cfg.get(
-            'triplet_loss',
-            dict(type='TripletLoss', margin=0.3, is_hard_loss=True))
-        self.triplet_loss = builder.build_loss(triplet_loss_cfg)
+        triplet_loss_cfg = self.train_cfg.get('triplet_loss', None)
+        if triplet_loss_cfg is None and not self.with_cls_head:
+            triplet_loss_cfg = dict(type='TripletLoss', margin=0.3, is_hard_loss=True)
+        self.triplet_loss = builder.build_loss(triplet_loss_cfg) if triplet_loss_cfg is not None else None
 
     def _extract_view_labels(self, img_metas, device):
         img_metas = _unwrap_meta(img_metas)
@@ -117,6 +117,8 @@ class RecognizerGCN(BaseRecognizer):
         )
         gt_label = label.squeeze(-1)
         if not self.with_cls_head:
+            if self.triplet_loss is None:
+                raise RuntimeError('Triplet loss is required when training without a classification head.')
             embedding = _pool_features_before_head(x).unsqueeze(-1)
             losses['loss_triplet'] = self.triplet_loss(embedding, gt_label)
             return losses
@@ -128,6 +130,9 @@ class RecognizerGCN(BaseRecognizer):
         )
         loss = self.cls_head.loss(cls_score, get_graph, gt_label)
         losses.update(loss)
+        if self.triplet_loss is not None:
+            embedding = _pool_features_before_head(x).unsqueeze(-1)
+            losses['loss_triplet'] = self.triplet_loss(embedding, gt_label)
 
         view_logits = getattr(self.backbone, 'view_logits', None)
         if view_logits is None:
