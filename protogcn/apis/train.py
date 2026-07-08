@@ -237,7 +237,8 @@ def train_model(model,
     runner.register_training_hooks(cfg.lr_config, optimizer_config,
                                    cfg.checkpoint_config, cfg.log_config,
                                    cfg.get('momentum_config', None))
-    runner.register_hook(DistSamplerSeedHook())
+    if not use_iter_runner:
+        runner.register_hook(DistSamplerSeedHook())
 
     eval_hook = None
     if validate:
