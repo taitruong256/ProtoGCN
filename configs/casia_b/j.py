@@ -52,11 +52,12 @@ data = dict(
     videos_per_gpu=128,
     workers_per_gpu=0,
     train_dataloader=dict(
+        pin_memory=False,
         triplet_sampler=dict(
             batch_size=[4, 32],
             batch_shuffle=False)),
-    val_dataloader=dict(videos_per_gpu=1),
-    test_dataloader=dict(videos_per_gpu=1),
+    val_dataloader=dict(videos_per_gpu=1, pin_memory=False),
+    test_dataloader=dict(videos_per_gpu=1, pin_memory=False),
     train=dict(type=dataset_type, ann_file=train_ann_file, pipeline=train_pipeline),
     val=dict(type=dataset_type, ann_file=val_ann_file, pipeline=val_pipeline),
     test=dict(type=dataset_type, ann_file=test_ann_file, pipeline=test_pipeline))

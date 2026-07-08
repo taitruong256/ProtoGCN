@@ -2,6 +2,7 @@ import numpy as np
 import os
 import os.path as osp
 import re
+import threading
 import time
 import torch
 import torch.distributed as dist
@@ -264,7 +265,33 @@ def train_model(model,
     max_progress = cfg.total_iters if use_iter_runner else cfg.total_epochs
     logger.info('Starting runner: type=%s, max_progress=%s, workflow=%s',
                 Runner.__name__, max_progress, cfg.workflow)
-    runner.run(data_loaders, cfg.workflow, max_progress)
+    heartbeat_stop = threading.Event()
+
+    def _training_heartbeat():
+        while not heartbeat_stop.wait(60):
+            if torch.cuda.is_available():
+                memory = torch.cuda.memory_allocated() / 1024 / 1024
+                logger.info(
+                    'Training heartbeat: iter=%s/%s epoch=%s mode=%s cuda_allocated=%.2f MB',
+                    runner.iter, max_progress, runner.epoch,
+                    getattr(runner, 'mode', None), memory)
+            else:
+                logger.info(
+                    'Training heartbeat: iter=%s/%s epoch=%s mode=%s',
+                    runner.iter, max_progress, runner.epoch,
+                    getattr(runner, 'mode', None))
+
+    heartbeat_thread = None
+    if rank == 0:
+        heartbeat_thread = threading.Thread(
+            target=_training_heartbeat, daemon=True)
+        heartbeat_thread.start()
+    try:
+        runner.run(data_loaders, cfg.workflow, max_progress)
+    finally:
+        heartbeat_stop.set()
+        if heartbeat_thread is not None:
+            heartbeat_thread.join(timeout=1)
     logger.info('Runner finished training at iter=%s epoch=%s.',
                 runner.iter, runner.epoch)
 
