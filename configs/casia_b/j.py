@@ -1,6 +1,7 @@
 modality = 'j'
 graph = 'coco'
 work_dir = f'./work_dirs/casia_b/j_triplet'
+log_model_complexity = False
 
 model = dict(
     type='RecognizerGCN',
@@ -48,7 +49,7 @@ test_pipeline = [
 ]
 data = dict(
     videos_per_gpu=256,
-    workers_per_gpu=4,
+    workers_per_gpu=0,
     train_dataloader=dict(
         triplet_sampler=dict(
             batch_size=[4, 64],

@@ -164,10 +164,19 @@ def train_model(model,
             Default: None
     """
     logger = get_root_logger(log_level=cfg.get('log_level', 'INFO'))
+    logger.info(
+        'CUDA status: available=%s, device_count=%d, current_device=%s',
+        torch.cuda.is_available(),
+        torch.cuda.device_count(),
+        torch.cuda.current_device() if torch.cuda.is_available() else 'cpu')
+    if torch.cuda.is_available():
+        logger.info('CUDA device name: %s',
+                    torch.cuda.get_device_name(torch.cuda.current_device()))
 
     # prepare data loaders
     dataset = dataset if isinstance(dataset, (list, tuple)) else [dataset]
 
+    logger.info('Building train dataloader(s) ...')
     dataloader_setting = dict(
         videos_per_gpu=cfg.data.get('videos_per_gpu', 1),
         workers_per_gpu=cfg.data.get('workers_per_gpu', 1),
@@ -179,11 +188,16 @@ def train_model(model,
     data_loaders = [
         build_dataloader(ds, **dataloader_setting) for ds in dataset
     ]
+    logger.info('Train dataloader(s) built.')
 
     rank, world_size = get_dist_info()
-    if rank == 0:
+    if rank == 0 and cfg.get('log_model_complexity', False):
+        logger.info('Running model complexity profiling before training ...')
         device = torch.device('cuda', torch.cuda.current_device()) if torch.cuda.is_available() else torch.device('cpu')
         _log_model_complexity(model, data_loaders[0], logger, device)
+        logger.info('Model complexity profiling finished.')
+    elif rank == 0:
+        logger.info('Model complexity profiling skipped.')
     if dist.is_available() and dist.is_initialized() and world_size > 1:
         dist.barrier()
 
@@ -191,12 +205,14 @@ def train_model(model,
     find_unused_parameters = cfg.get('find_unused_parameters', True)
     # Sets the `find_unused_parameters` parameter in
     # torch.nn.parallel.DistributedDataParallel
-    
+    logger.info('Moving model to CUDA and wrapping with MMDistributedDataParallel ...')
     model = MMDistributedDataParallel(
         model.cuda(),
         device_ids=[torch.cuda.current_device()],
         broadcast_buffers=False,
         find_unused_parameters=find_unused_parameters)
+    logger.info('Model is on CUDA. Allocated memory: %.2f MB',
+                torch.cuda.memory_allocated() / 1024 / 1024)
 
     # build runner
     optimizer = build_optimizer(model, cfg.optimizer)
@@ -245,6 +261,8 @@ def train_model(model,
         runner.load_checkpoint(cfg.load_from)
 
     max_progress = cfg.total_iters if use_iter_runner else cfg.total_epochs
+    logger.info('Starting runner: type=%s, max_progress=%s, workflow=%s',
+                Runner.__name__, max_progress, cfg.workflow)
     runner.run(data_loaders, cfg.workflow, max_progress)
 
     dist.barrier()
