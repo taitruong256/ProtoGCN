@@ -1,6 +1,7 @@
 modality = 'j'
 graph = 'coco'
 work_dir = f'./work_dirs/casia_b/j_triplet'
+auto_resume = False
 log_model_complexity = False
 
 model = dict(

@@ -54,7 +54,10 @@ class DistEvalHook(BasicDistEvalHook):
             heartbeat_thread.start()
 
         try:
-            return super()._do_evaluate(runner)
+            result = super()._do_evaluate(runner)
+            if rank == 0:
+                logger.info('Validation hook finished.')
+            return result
         finally:
             heartbeat_stop.set()
             if heartbeat_thread is not None:

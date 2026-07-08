@@ -105,6 +105,10 @@ def main():
 
     # log some basic info
     logger.info(f'Config: {cfg.pretty_text}')
+    logger.info('auto_resume=%s, resume_from=%s, load_from=%s',
+                cfg.get('auto_resume', True),
+                cfg.get('resume_from', None),
+                cfg.get('load_from', None))
 
     # set random seeds
     seed = init_random_seed(args.seed)
