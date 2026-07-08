@@ -155,7 +155,6 @@ class RecognizerGCN(BaseRecognizer):
     def forward_test(self, keypoint, **kwargs):
         """Defines the computation performed at every call when evaluation and
         testing."""
-        assert self.with_cls_head or self.feat_ext
         logger.debug("RecognizerGCN.forward_test: keypoint=%s", tuple(keypoint.shape))
         bs, nc = keypoint.shape[:2]
         keypoint = keypoint.reshape((bs * nc, ) + keypoint.shape[2:])
@@ -167,9 +166,10 @@ class RecognizerGCN(BaseRecognizer):
             tuple(get_graph.shape) if isinstance(get_graph, torch.Tensor) else type(get_graph).__name__,
         )
         feat_ext = self.test_cfg.get('feat_ext', False)
+        score_ext = self.test_cfg.get('score_ext', False)
         return_view_score = self.test_cfg.get('return_view_score', False)
         pool_opt = self.test_cfg.get('pool_opt', 'all')
-        score_ext = self.test_cfg.get('score_ext', False)
+        assert self.with_cls_head or feat_ext or score_ext
         if feat_ext or score_ext:
             assert isinstance(pool_opt, str)
             dim_idx = dict(n=0, m=1, t=3, v=4)
