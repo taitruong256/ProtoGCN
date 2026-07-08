@@ -2,6 +2,7 @@ import logging
 import threading
 
 import numpy as np
+import torch.distributed as dist
 from mmcv.runner import DistEvalHook as BasicDistEvalHook
 from mmcv.runner import get_dist_info
 
@@ -15,6 +16,7 @@ class DistEvalHook(BasicDistEvalHook):
     def __init__(self, *args, save_best='auto', seg_interval=None, **kwargs):
         super().__init__(*args, save_best=save_best, **kwargs)
         self.seg_interval = seg_interval
+        self._log_next_train_iter = False
         if seg_interval is not None:
             assert isinstance(seg_interval, list)
             for i, tup in enumerate(seg_interval):
@@ -38,6 +40,15 @@ class DistEvalHook(BasicDistEvalHook):
         assert n is not None
         return self.every_n_epochs(runner, n)
 
+    def before_train_iter(self, runner):
+        if not self._log_next_train_iter:
+            return
+        rank, _ = get_dist_info()
+        if rank == 0:
+            runner.logger.info('Training resumed after validation at iter=%s.',
+                               runner.iter + 1)
+        self._log_next_train_iter = False
+
     def _do_evaluate(self, runner):
         rank, _ = get_dist_info()
         heartbeat_stop = threading.Event()
@@ -56,7 +67,13 @@ class DistEvalHook(BasicDistEvalHook):
         try:
             result = super()._do_evaluate(runner)
             if rank == 0:
-                logger.info('Validation hook finished.')
+                logger.info('Validation hook finished metrics; synchronizing ranks ...')
+            if dist.is_available() and dist.is_initialized():
+                dist.barrier()
+            runner.model.train()
+            self._log_next_train_iter = True
+            if rank == 0:
+                logger.info('Validation hook finished; training mode restored.')
             return result
         finally:
             heartbeat_stop.set()
