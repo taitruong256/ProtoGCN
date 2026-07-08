@@ -1,8 +1,12 @@
 import logging
+import os
+import os.path as osp
+import shutil
 import threading
 
 import numpy as np
 import torch.distributed as dist
+from mmcv.engine import multi_gpu_test
 from mmcv.runner import DistEvalHook as BasicDistEvalHook
 from mmcv.runner import get_dist_info
 
@@ -17,6 +21,7 @@ class DistEvalHook(BasicDistEvalHook):
         super().__init__(*args, save_best=save_best, **kwargs)
         self.seg_interval = seg_interval
         self._log_next_train_iter = False
+        self._configured_save_best = save_best
         if seg_interval is not None:
             assert isinstance(seg_interval, list)
             for i, tup in enumerate(seg_interval):
@@ -49,6 +54,63 @@ class DistEvalHook(BasicDistEvalHook):
                                runner.iter + 1)
         self._log_next_train_iter = False
 
+    def after_train_iter(self, runner):
+        if not self._should_evaluate(runner):
+            return
+        self._do_evaluate(runner)
+
+    def _update_best_checkpoint(self, runner, eval_results):
+        key_indicator = getattr(self, 'key_indicator', None)
+        if key_indicator in (None, 'auto'):
+            key_indicator = self._configured_save_best
+        if key_indicator in (None, 'auto'):
+            key_indicator = next(iter(eval_results))
+
+        if key_indicator not in eval_results:
+            runner.logger.warning(
+                'Skip best checkpoint because metric %s is missing.',
+                key_indicator)
+            return
+
+        rule = getattr(self, 'rule', None)
+        if rule is None or rule == 'auto':
+            rule = 'less' if any(key in key_indicator for key in self.less_keys) else 'greater'
+
+        score = eval_results[key_indicator]
+        best_score = getattr(self, 'best_score', None)
+        if best_score is None:
+            best_score = np.inf if rule == 'less' else -np.inf
+
+        is_better = score < best_score if rule == 'less' else score > best_score
+        if not is_better:
+            return
+
+        current = runner.iter + 1
+        ckpt_path = osp.join(runner.work_dir, f'iter_{current}.pth')
+        if not osp.exists(ckpt_path):
+            ckpt_path = osp.join(runner.work_dir, 'latest.pth')
+        if not osp.exists(ckpt_path):
+            runner.logger.warning(
+                'Skip best checkpoint because no checkpoint exists for iter %s.',
+                current)
+            return
+
+        previous_best = getattr(self, 'best_ckpt_path', None)
+        if previous_best and osp.exists(previous_best):
+            os.remove(previous_best)
+
+        best_name = f'best_{key_indicator}_iter_{current}.pth'
+        best_path = osp.join(runner.work_dir, best_name)
+        shutil.copyfile(ckpt_path, best_path)
+        self.best_ckpt_path = best_path
+        self.best_score = score
+        runner.meta.setdefault('hook_msgs', {})
+        runner.meta['hook_msgs']['best_score'] = score
+        runner.meta['hook_msgs']['best_ckpt'] = best_path
+        runner.logger.info('Now best checkpoint is saved as %s.', best_name)
+        runner.logger.info('Best %s is %.4f at %s iter.',
+                           key_indicator, score, current)
+
     def _do_evaluate(self, runner):
         rank, _ = get_dist_info()
         heartbeat_stop = threading.Event()
@@ -65,8 +127,21 @@ class DistEvalHook(BasicDistEvalHook):
             heartbeat_thread.start()
 
         try:
-            result = super()._do_evaluate(runner)
+            results = multi_gpu_test(
+                runner.model,
+                self.dataloader,
+                tmpdir=getattr(self, 'tmpdir', None),
+                gpu_collect=getattr(self, 'gpu_collect', False))
+
             if rank == 0:
+                eval_kwargs = getattr(self, 'eval_kwargs', {})
+                eval_results = self.dataloader.dataset.evaluate(
+                    results, logger=runner.logger, **eval_kwargs)
+                for name, val in eval_results.items():
+                    runner.log_buffer.output[name] = val
+                runner.log_buffer.ready = True
+                if self._configured_save_best:
+                    self._update_best_checkpoint(runner, eval_results)
                 logger.info('Validation hook finished metrics; synchronizing ranks ...')
             if dist.is_available() and dist.is_initialized():
                 dist.barrier()
@@ -74,7 +149,7 @@ class DistEvalHook(BasicDistEvalHook):
             self._log_next_train_iter = True
             if rank == 0:
                 logger.info('Validation hook finished; training mode restored.')
-            return result
+            return None
         finally:
             heartbeat_stop.set()
             if heartbeat_thread is not None:
