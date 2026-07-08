@@ -1,5 +1,9 @@
+import logging
+import threading
+
 import numpy as np
 from mmcv.runner import DistEvalHook as BasicDistEvalHook
+from mmcv.runner import get_dist_info
 
 
 class DistEvalHook(BasicDistEvalHook):
@@ -33,6 +37,28 @@ class DistEvalHook(BasicDistEvalHook):
         n = self._find_n(runner)
         assert n is not None
         return self.every_n_epochs(runner, n)
+
+    def _do_evaluate(self, runner):
+        rank, _ = get_dist_info()
+        heartbeat_stop = threading.Event()
+        heartbeat_thread = None
+
+        if rank == 0:
+            logger = getattr(runner, 'logger', logging.getLogger(__name__))
+
+            def _heartbeat():
+                while not heartbeat_stop.wait(60):
+                    logger.info('Validation is still running ...')
+
+            heartbeat_thread = threading.Thread(target=_heartbeat, daemon=True)
+            heartbeat_thread.start()
+
+        try:
+            return super()._do_evaluate(runner)
+        finally:
+            heartbeat_stop.set()
+            if heartbeat_thread is not None:
+                heartbeat_thread.join(timeout=1)
 
 
 def confusion_matrix(y_pred, y_real, normalize=None):

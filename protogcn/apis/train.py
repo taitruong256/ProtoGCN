@@ -265,6 +265,8 @@ def train_model(model,
     logger.info('Starting runner: type=%s, max_progress=%s, workflow=%s',
                 Runner.__name__, max_progress, cfg.workflow)
     runner.run(data_loaders, cfg.workflow, max_progress)
+    logger.info('Runner finished training at iter=%s epoch=%s.',
+                runner.iter, runner.epoch)
 
     dist.barrier()
     time.sleep(2)
@@ -315,9 +317,15 @@ def train_model(model,
 
         for name, ckpt in zip(names, ckpts):
             if ckpt is not None:
+                logger.info('Loading %s checkpoint for final testing: %s',
+                            name, ckpt)
                 runner.load_checkpoint(ckpt)
 
+            logger.info('Starting final testing for the %s checkpoint ...',
+                        name)
             outputs = multi_gpu_test(runner.model, test_dataloader, tmpdir)
+            logger.info('Finished final testing for the %s checkpoint.',
+                        name)
             rank, _ = get_dist_info()
             if rank == 0:
                 out = osp.join(cfg.work_dir, f'{name}_pred.pkl')

@@ -48,11 +48,11 @@ test_pipeline = [
     dict(type='ToTensor', keys=['keypoint'])
 ]
 data = dict(
-    videos_per_gpu=256,
+    videos_per_gpu=128,
     workers_per_gpu=0,
     train_dataloader=dict(
         triplet_sampler=dict(
-            batch_size=[4, 64],
+            batch_size=[4, 32],
             batch_shuffle=False)),
     val_dataloader=dict(videos_per_gpu=1),
     test_dataloader=dict(videos_per_gpu=1),
@@ -73,4 +73,4 @@ evaluation = dict(
     metrics=['gait_rank1', 'gait_contrastive_loss'],
     save_best='gait_contrastive_loss',
     rule='less')
-log_config = dict(interval=100, hooks=[dict(type='TextLoggerHook')])
+log_config = dict(interval=50, hooks=[dict(type='TextLoggerHook')])
