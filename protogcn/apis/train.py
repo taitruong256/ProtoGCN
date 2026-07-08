@@ -1,13 +1,16 @@
 import numpy as np
 import os
 import os.path as osp
+import re
 import time
 import torch
 import torch.distributed as dist
 from fvcore.nn import FlopCountAnalysis, parameter_count
 from mmcv.engine import multi_gpu_test
 from mmcv.parallel import MMDistributedDataParallel
-from mmcv.runner import DistSamplerSeedHook, EpochBasedRunner, OptimizerHook, build_optimizer, get_dist_info
+from mmcv.runner import (DistSamplerSeedHook, EpochBasedRunner,
+                         IterBasedRunner, OptimizerHook, build_optimizer,
+                         get_dist_info)
 
 from ..core import DistEvalHook
 from ..datasets import build_dataloader, build_dataset
@@ -198,7 +201,8 @@ def train_model(model,
     # build runner
     optimizer = build_optimizer(model, cfg.optimizer)
 
-    Runner = EpochBasedRunner
+    use_iter_runner = cfg.get('runner_type', None) == 'IterBasedRunner' or 'total_iters' in cfg
+    Runner = IterBasedRunner if use_iter_runner else EpochBasedRunner
     runner = Runner(
         model,
         optimizer=optimizer,
@@ -240,7 +244,8 @@ def train_model(model,
         cfg.load_from = cache_checkpoint(cfg.load_from)
         runner.load_checkpoint(cfg.load_from)
 
-    runner.run(data_loaders, cfg.workflow, cfg.total_epochs)
+    max_progress = cfg.total_iters if use_iter_runner else cfg.total_epochs
+    runner.run(data_loaders, cfg.workflow, max_progress)
 
     dist.barrier()
     time.sleep(2)
@@ -258,10 +263,11 @@ def train_model(model,
                 if not test['test_last']:
                     return
             elif len(ckpt_paths) > 1:
-                epoch_ids = [
-                    int(x.split('epoch_')[-1][:-4]) for x in ckpt_paths
-                ]
-                best_ckpt_path = ckpt_paths[np.argmax(epoch_ids)]
+                ckpt_ids = []
+                for path in ckpt_paths:
+                    match = re.search(r'(?:epoch|iter)_(\d+)', path)
+                    ckpt_ids.append(int(match.group(1)) if match else -1)
+                best_ckpt_path = ckpt_paths[np.argmax(ckpt_ids)]
             else:
                 best_ckpt_path = ckpt_paths[0]
             if best_ckpt_path:

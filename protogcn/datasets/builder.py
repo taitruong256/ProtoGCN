@@ -8,7 +8,8 @@ from mmcv.runner import get_dist_info
 from mmcv.utils import Registry, build_from_cfg, digit_version
 from torch.utils.data import DataLoader
 
-from .samplers import ClassSpecificDistributedSampler, DistributedSampler
+from .samplers import (ClassSpecificDistributedSampler, DistributedSampler,
+                       TripletBatchSampler)
 
 if platform.system() != 'Windows':
     import resource
@@ -74,6 +75,36 @@ def build_dataloader(dataset,
         DataLoader: A PyTorch dataloader.
     """
     rank, world_size = get_dist_info()
+    triplet_sampler_cfg = kwargs.pop('triplet_sampler', None)
+
+    if triplet_sampler_cfg is not None:
+        triplet_sampler_cfg = triplet_sampler_cfg.copy()
+        triplet_batch_size = triplet_sampler_cfg.pop('batch_size')
+        batch_sampler = TripletBatchSampler(
+            dataset,
+            triplet_batch_size,
+            num_replicas=world_size,
+            rank=rank,
+            seed=seed,
+            **triplet_sampler_cfg)
+        num_workers = workers_per_gpu
+        samples_per_gpu = batch_sampler.total_batch_size // world_size
+
+        init_fn = partial(
+            worker_init_fn, num_workers=num_workers, rank=rank,
+            seed=seed) if seed is not None else None
+
+        if digit_version(torch.__version__) >= digit_version('1.8.0'):
+            kwargs['persistent_workers'] = persistent_workers
+
+        return DataLoader(
+            dataset,
+            batch_sampler=batch_sampler,
+            num_workers=num_workers,
+            collate_fn=partial(collate, samples_per_gpu=samples_per_gpu),
+            pin_memory=pin_memory,
+            worker_init_fn=init_fn,
+            **kwargs)
 
     if hasattr(dataset, 'class_prob') and dataset.class_prob is not None:
         sampler = ClassSpecificDistributedSampler(

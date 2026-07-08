@@ -2,6 +2,7 @@ import math
 import torch
 from collections import defaultdict
 from torch.utils.data import DistributedSampler as _DistributedSampler
+from torch.utils.data import Sampler
 
 
 class DistributedSampler(_DistributedSampler):
@@ -108,3 +109,90 @@ class ClassSpecificDistributedSampler(_DistributedSampler):
         indices = indices[self.rank:self.total_size:self.num_replicas]
         assert len(indices) == self.num_samples
         return iter(indices)
+
+
+class TripletBatchSampler(Sampler):
+    """Infinite P x K sampler for metric-learning batches.
+
+    Each yielded batch contains P labels and K samples for each label. In
+    distributed training every rank builds the same global batch, then receives
+    its rank slice.
+    """
+
+    def __init__(self,
+                 dataset,
+                 batch_size,
+                 num_replicas=1,
+                 rank=0,
+                 batch_shuffle=False,
+                 seed=0):
+        if not isinstance(batch_size, (list, tuple)) or len(batch_size) != 2:
+            raise ValueError(f'batch_size should be [P, K], got {batch_size}')
+
+        self.dataset = dataset
+        self.num_labels = int(batch_size[0])
+        self.num_instances = int(batch_size[1])
+        self.total_batch_size = self.num_labels * self.num_instances
+        self.num_replicas = num_replicas
+        self.rank = rank
+        self.batch_shuffle = batch_shuffle
+        self.seed = seed if seed is not None else 0
+        self.epoch = 0
+
+        if self.num_labels <= 1 or self.num_instances <= 1:
+            raise ValueError('TripletBatchSampler requires P > 1 and K > 1.')
+        if self.total_batch_size % self.num_replicas != 0:
+            raise ValueError(
+                f'World size ({self.num_replicas}) must divide '
+                f'P x K ({self.num_labels} x {self.num_instances}).')
+
+        labels = [item['label'] for item in self._get_video_infos(dataset)]
+        self.indices_dict = defaultdict(list)
+        for idx, label in enumerate(labels):
+            self.indices_dict[int(label)].append(idx)
+        self.label_set = sorted(self.indices_dict)
+        if len(self.label_set) < self.num_labels:
+            raise ValueError(
+                f'Dataset has {len(self.label_set)} labels, fewer than '
+                f'P={self.num_labels}.')
+
+    @staticmethod
+    def _get_video_infos(dataset):
+        while hasattr(dataset, 'dataset'):
+            dataset = dataset.dataset
+        if not hasattr(dataset, 'video_infos'):
+            raise AttributeError(
+                'TripletBatchSampler expects dataset.video_infos with labels.')
+        return dataset.video_infos
+
+    def _sample(self, values, k, generator):
+        values = list(values)
+        if len(values) < k:
+            pos = torch.randint(len(values), (k,), generator=generator).tolist()
+        else:
+            pos = torch.randperm(len(values), generator=generator)[:k].tolist()
+        return [values[i] for i in pos]
+
+    def __iter__(self):
+        generator = torch.Generator()
+        generator.manual_seed(self.seed + self.epoch)
+        while True:
+            sample_indices = []
+            pid_list = self._sample(self.label_set, self.num_labels, generator)
+            for pid in pid_list:
+                sample_indices.extend(
+                    self._sample(self.indices_dict[pid], self.num_instances,
+                                 generator))
+
+            if self.batch_shuffle:
+                order = torch.randperm(
+                    len(sample_indices), generator=generator).tolist()
+                sample_indices = [sample_indices[i] for i in order]
+
+            yield sample_indices[self.rank::self.num_replicas]
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def set_epoch(self, epoch):
+        self.epoch = epoch

@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 
 from ..builder import RECOGNIZERS
+from .. import builder
 from .base import BaseRecognizer
 
 logger = logging.getLogger(__name__)
@@ -77,7 +78,11 @@ class RecognizerGCN(BaseRecognizer):
         self.view_loss_weight = view_loss_weight
         self.view_label_key = view_label_key
         super().__init__(backbone, cls_head=cls_head, train_cfg=train_cfg, test_cfg=test_cfg)
-        self.view_loss = nn.CrossEntropyLoss()
+        self.view_loss = nn.CrossEntropyLoss() if self.with_cls_head else None
+        triplet_loss_cfg = self.train_cfg.get(
+            'triplet_loss',
+            dict(type='TripletLoss', margin=0.3, is_hard_loss=True))
+        self.triplet_loss = builder.build_loss(triplet_loss_cfg)
 
     def _extract_view_labels(self, img_metas, device):
         img_metas = _unwrap_meta(img_metas)
@@ -99,7 +104,6 @@ class RecognizerGCN(BaseRecognizer):
 
     def forward_train(self, keypoint, label, **kwargs):
         """Defines the computation performed at every call when training."""
-        assert self.with_cls_head
         assert keypoint.shape[1] == 1
         logger.debug("RecognizerGCN.forward_train: keypoint=%s label=%s", tuple(keypoint.shape), tuple(label.shape))
         keypoint = keypoint[:, 0]
@@ -111,12 +115,17 @@ class RecognizerGCN(BaseRecognizer):
             tuple(x.shape) if isinstance(x, torch.Tensor) else type(x).__name__,
             tuple(get_graph.shape) if isinstance(get_graph, torch.Tensor) else type(get_graph).__name__,
         )
+        gt_label = label.squeeze(-1)
+        if not self.with_cls_head:
+            embedding = _pool_features_before_head(x).unsqueeze(-1)
+            losses['loss_triplet'] = self.triplet_loss(embedding, gt_label)
+            return losses
+
         cls_score = self.cls_head(x)
         logger.debug(
             "RecognizerGCN.forward_train: cls_score=%s",
             tuple(cls_score.shape) if isinstance(cls_score, torch.Tensor) else type(cls_score).__name__,
         )
-        gt_label = label.squeeze(-1)
         loss = self.cls_head.loss(cls_score, get_graph, gt_label)
         losses.update(loss)
 
