@@ -238,6 +238,116 @@ class CasiaBGaitDataset(BaseDataset):
         loss = -(log_prob * pos_mask).sum(axis=1)[valid] / pos_count[valid]
         return float(loss.mean())
 
+    @staticmethod
+    def _normalize_feature(feature):
+        feature = np.asarray(feature, dtype=np.float32)
+        norm = np.linalg.norm(feature)
+        if norm > 0:
+            feature = feature / norm
+        return feature
+
+    @staticmethod
+    def _format_accuracy_table(table, row_names, col_names):
+        header = ['condition'] + [f'{angle:03d}' for angle in col_names] + ['mean']
+        rows = []
+        for row_name in row_names:
+            values = table[row_name]
+            row_mean = np.nanmean(values) if np.any(~np.isnan(values)) else np.nan
+            row = [row_name.upper()]
+            row.extend('--' if np.isnan(value) else f'{value * 100:.1f}' for value in values)
+            row.append('--' if np.isnan(row_mean) else f'{row_mean * 100:.1f}')
+            rows.append(row)
+
+        col_widths = [
+            max(len(str(row[i])) for row in [header] + rows)
+            for i in range(len(header))
+        ]
+
+        def fmt(row):
+            return '  '.join(str(value).rjust(col_widths[i]) for i, value in enumerate(row))
+
+        lines = [fmt(header), fmt(['-' * width for width in col_widths])]
+        lines.extend(fmt(row) for row in rows)
+        return '\n'.join(lines)
+
+    def _evaluate_rank1_by_condition_view(self, features, labels, roles,
+                                          conditions, views):
+        condition_order = ('nm', 'bg', 'cl')
+        view_order = list(range(0, 181, 18))
+
+        table = {
+            condition: np.full(len(view_order), np.nan, dtype=np.float32)
+            for condition in condition_order
+        }
+        total_correct = 0
+        total_count = 0
+
+        gallery_mask = roles == 'gallery'
+        probe_mask = roles == 'probe'
+
+        gallery_features = features[gallery_mask]
+        gallery_labels = labels[gallery_mask]
+        gallery_views = views[gallery_mask]
+
+        gallery_by_view = {}
+        for gallery_view in view_order:
+            view_mask = gallery_views == gallery_view
+            if not np.any(view_mask):
+                continue
+
+            view_features = gallery_features[view_mask]
+            view_labels = gallery_labels[view_mask]
+            templates = []
+            template_labels = []
+            for label in sorted(set(view_labels.tolist())):
+                label_mask = view_labels == label
+                template = self._normalize_feature(view_features[label_mask].mean(axis=0))
+                templates.append(template)
+                template_labels.append(label)
+
+            if templates:
+                gallery_by_view[gallery_view] = (
+                    np.stack(templates, axis=0),
+                    np.asarray(template_labels))
+
+        if not gallery_by_view:
+            raise ValueError('CASIA-B gait evaluation found no valid gallery view templates.')
+
+        probe_features = features[probe_mask]
+        probe_labels = labels[probe_mask]
+        probe_conditions = conditions[probe_mask]
+        probe_views = views[probe_mask]
+
+        for condition in condition_order:
+            for view_idx, probe_view in enumerate(view_order):
+                sample_mask = (
+                    (probe_conditions == condition) &
+                    (probe_views == probe_view))
+                if not np.any(sample_mask):
+                    continue
+
+                correct = 0
+                count = 0
+                cur_features = probe_features[sample_mask]
+                cur_labels = probe_labels[sample_mask]
+                for gallery_view, (gallery_templates, gallery_template_labels) in gallery_by_view.items():
+                    if gallery_view == probe_view:
+                        continue
+                    distances = 1 - np.matmul(cur_features, gallery_templates.T)
+                    pred_labels = gallery_template_labels[np.argmin(distances, axis=1)]
+                    correct += int((pred_labels == cur_labels).sum())
+                    count += int(cur_labels.size)
+
+                if count > 0:
+                    table[condition][view_idx] = correct / count
+                    total_correct += correct
+                    total_count += count
+
+        if total_count == 0:
+            raise ValueError('CASIA-B gait evaluation found no valid probe/gallery comparisons.')
+
+        return table, float(total_correct / total_count), condition_order, view_order
+
     def evaluate(self,
                  results,
                  metrics='gait_rank1',
@@ -267,9 +377,11 @@ class CasiaBGaitDataset(BaseDataset):
             features = np.stack([self._to_feature(result) for result in results])
         labels = np.array([ann['label'] for ann in self.video_infos])
         roles = np.array([ann.get('gait_role', 'probe') for ann in self.video_infos])
+        conditions = np.array([ann.get('condition', '') for ann in self.video_infos])
         view_labels = np.array([
             self._view_to_index(ann.get('view', 0)) for ann in self.video_infos
         ])
+        view_angles = view_labels * 18
 
         gallery_mask = roles == 'gallery'
         probe_mask = roles == 'probe'
@@ -282,38 +394,31 @@ class CasiaBGaitDataset(BaseDataset):
         if 'gait_rank1' in metrics:
             msg = '\nEvaluating gait_rank1 ...' if logger is None else 'Evaluating gait_rank1 ...'
             print_log(msg, logger=logger)
-            gallery_features = features[gallery_mask]
-            gallery_labels = labels[gallery_mask]
-            probe_features = features[probe_mask]
-            probe_labels = labels[probe_mask]
-            probe_conditions = np.array([ann.get('condition', '') for ann in self.video_infos])[probe_mask]
+            accuracy_table, rank1, condition_order, view_order = self._evaluate_rank1_by_condition_view(
+                features, labels, roles, conditions, view_angles)
 
-            gallery_templates = []
-            gallery_template_labels = []
-            for label in sorted(set(gallery_labels)):
-                label_mask = gallery_labels == label
-                template = gallery_features[label_mask].mean(axis=0)
-                norm = np.linalg.norm(template)
-                if norm > 0:
-                    template = template / norm
-                gallery_templates.append(template)
-                gallery_template_labels.append(label)
-            gallery_templates = np.stack(gallery_templates)
-            gallery_template_labels = np.asarray(gallery_template_labels)
-
-            distances = 1 - np.matmul(probe_features, gallery_templates.T)
-            pred_labels = gallery_template_labels[np.argmin(distances, axis=1)]
-            correct = pred_labels == probe_labels
-            eval_results['gait_rank1'] = float(correct.mean())
+            eval_results['gait_rank1'] = rank1
             print_log(f'\ngait_rank1\t{eval_results["gait_rank1"]:.4f}', logger=logger)
 
-            for condition in ('bg', 'cl', 'nm'):
-                condition_mask = probe_conditions == condition
-                if not np.any(condition_mask):
+            print_log(
+                '\nCASIA-B rank-1 accuracy by condition/probe angle (%)\n' +
+                self._format_accuracy_table(accuracy_table, condition_order, view_order),
+                logger=logger)
+
+            for condition in condition_order:
+                values = accuracy_table[condition]
+                valid = ~np.isnan(values)
+                if not np.any(valid):
                     continue
                 key = f'gait_rank1_{condition}'
-                eval_results[key] = float(correct[condition_mask].mean())
+                eval_results[key] = float(np.nanmean(values))
                 print_log(f'\n{key}\t{eval_results[key]:.4f}', logger=logger)
+
+                for view_idx, view_angle in enumerate(view_order):
+                    value = values[view_idx]
+                    if np.isnan(value):
+                        continue
+                    eval_results[f'gait_rank1_{condition}_{view_angle:03d}'] = float(value)
 
         if 'gait_contrastive_loss' in metrics:
             msg = '\nEvaluating gait_contrastive_loss ...' if logger is None else 'Evaluating gait_contrastive_loss ...'
