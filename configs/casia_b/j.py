@@ -2,6 +2,10 @@ modality = 'j'
 graph = 'coco'
 num_classes = 74 
 work_dir = f'./work_dirs/casia_b/j_new'
+num_identities = 4
+num_sequences_per_identity = 16 
+samples_per_gpu = num_identities * num_sequences_per_identity
+total_iters = 40000
 
 model = dict(
     type='RecognizerGCN',
@@ -47,10 +51,13 @@ test_pipeline = [
     dict(type='ToTensor', keys=['keypoint'])
 ]
 data = dict(
-    videos_per_gpu=16,
+    videos_per_gpu=samples_per_gpu,
     workers_per_gpu=4,
     train_dataloader=dict(
-        sampler_cfg=dict(type='RandomIdentitySampler', num_instances=4)),
+        sampler_cfg=dict(
+            type='RandomIdentitySampler',
+            num_identities=num_identities,
+            num_instances=num_sequences_per_identity)),
     val_dataloader=dict(videos_per_gpu=1),
     test_dataloader=dict(videos_per_gpu=1),
     train=dict(type=dataset_type, ann_file=train_ann_file, pipeline=train_pipeline),
@@ -61,10 +68,11 @@ data = dict(
 optimizer = dict(type='SGD', lr=0.025, momentum=0.9, weight_decay=0.0005, nesterov=True)
 optimizer_config = dict(grad_clip=None)
 lr_config = dict(policy='CosineAnnealing', min_lr=0, by_epoch=False)
-total_epochs = 200
-checkpoint_config = dict(interval=1, max_keep_ckpts=1, save_last=True)
+runner = dict(type='IterBasedRunner', max_iters=total_iters)
+checkpoint_config = dict(by_epoch=False, interval=1000, max_keep_ckpts=1, save_last=True)
 evaluation = dict(
-    interval=1,
+    by_epoch=False,
+    interval=1000,
     metrics=['gait_rank1', 'gait_contrastive_loss'],
     save_best='gait_rank1',
     rule='greater')

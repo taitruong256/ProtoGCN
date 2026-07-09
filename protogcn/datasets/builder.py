@@ -84,6 +84,7 @@ def build_dataloader(dataset,
             dataset=dataset,
             batch_size=videos_per_gpu,
             num_instances=sampler_cfg['num_instances'],
+            num_identities=sampler_cfg.get('num_identities'),
             num_replicas=world_size,
             rank=rank,
             seed=seed)

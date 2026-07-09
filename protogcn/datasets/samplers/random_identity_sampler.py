@@ -11,16 +11,21 @@ class RandomIdentitySampler(Sampler):
                  dataset,
                  batch_size,
                  num_instances,
+                 num_identities=None,
                  num_replicas=1,
                  rank=0,
                  seed=0):
-        if batch_size % num_instances != 0:
-            raise ValueError('batch_size must be divisible by num_instances')
+        if num_identities is None:
+            if batch_size % num_instances != 0:
+                raise ValueError('batch_size must be divisible by num_instances')
+            num_identities = batch_size // num_instances
+        elif num_identities * num_instances != batch_size:
+            raise ValueError('batch_size must equal num_identities * num_instances')
 
         self.dataset = dataset
         self.batch_size = batch_size
         self.num_instances = num_instances
-        self.num_pids_per_batch = batch_size // num_instances
+        self.num_pids_per_batch = num_identities
         self.num_replicas = num_replicas
         self.rank = rank
         self.seed = seed or 0

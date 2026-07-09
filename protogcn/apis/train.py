@@ -6,7 +6,9 @@ import torch
 import torch.distributed as dist
 from mmcv.engine import multi_gpu_test
 from mmcv.parallel import MMDistributedDataParallel
-from mmcv.runner import DistSamplerSeedHook, EpochBasedRunner, OptimizerHook, build_optimizer, get_dist_info
+from mmcv.runner import (DistSamplerSeedHook, EpochBasedRunner,
+                         IterBasedRunner, OptimizerHook, build_optimizer,
+                         get_dist_info)
 
 from ..core import DistEvalHook
 from ..datasets import build_dataloader, build_dataset
@@ -96,7 +98,19 @@ def train_model(model,
     # build runner
     optimizer = build_optimizer(model, cfg.optimizer)
 
-    Runner = EpochBasedRunner
+    runner_cfg = cfg.get('runner', None)
+    if runner_cfg is None:
+        runner_cfg = dict(type='EpochBasedRunner', max_epochs=cfg.total_epochs)
+    runner_type = runner_cfg.get('type', 'EpochBasedRunner')
+    if runner_type == 'IterBasedRunner':
+        Runner = IterBasedRunner
+        max_iters = runner_cfg['max_iters']
+    elif runner_type == 'EpochBasedRunner':
+        Runner = EpochBasedRunner
+        max_iters = runner_cfg.get('max_epochs', cfg.total_epochs)
+    else:
+        raise ValueError(f'Unsupported runner type: {runner_type}')
+
     runner = Runner(
         model,
         optimizer=optimizer,
@@ -138,7 +152,7 @@ def train_model(model,
         cfg.load_from = cache_checkpoint(cfg.load_from)
         runner.load_checkpoint(cfg.load_from)
 
-    runner.run(data_loaders, cfg.workflow, cfg.total_epochs)
+    runner.run(data_loaders, cfg.workflow, max_iters)
 
     dist.barrier()
     time.sleep(2)
