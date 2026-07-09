@@ -83,17 +83,20 @@ class Class_Specific_Contrastive_Loss(nn.Module):
 
         return score_cl
     
-    def forward(self, feature, lbl, logit):
+    def forward(self, feature, lbl, logit=None):
         # batch: 16  num_class: 120
         # 16 256
         feature = self.cl_fc(feature)
-        # 16 120 -> 16
-        pred = logit.max(1)[1]
-        # 16 120
-        pred_one = self.onehot(pred)
         lbl_one = self.onehot(lbl)
-        # 16 120
-        logit = torch.softmax(logit, 1)
+        if logit is None:
+            # For metric-learning settings without a classifier head, use the
+            # ground-truth identity mask directly to update class memories.
+            pred_one = lbl_one
+            logit = lbl_one
+        else:
+            pred = logit.max(1)[1]
+            pred_one = self.onehot(pred)
+            logit = torch.softmax(logit, 1)
         
         mask = self.get_mask(lbl_one, pred_one, logit)
         f_mem = self.local_average(feature, mask)

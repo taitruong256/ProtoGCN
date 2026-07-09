@@ -137,10 +137,12 @@ class CasiaBGaitDataset(BaseDataset):
         feat = np.asarray(result, dtype=np.float32)
         feat = feat.reshape(-1, feat.shape[-3]) if feat.ndim >= 3 else feat.reshape(1, -1)
         feat = feat.mean(axis=0)
-        norm = np.linalg.norm(feat)
-        if norm > 0:
-            feat = feat / norm
         return feat
+
+    @staticmethod
+    def _pairwise_euclidean(query, gallery):
+        diff = query[:, None, :] - gallery[None, :, :]
+        return np.sqrt(np.maximum((diff * diff).sum(axis=2), 0.0))
 
     @staticmethod
     def _contrastive_loss(features, labels, temperature=0.07):
@@ -175,25 +177,17 @@ class CasiaBGaitDataset(BaseDataset):
             f'{len(results)} != {len(self)}')
 
         metrics = metrics if isinstance(metrics, (list, tuple)) else [metrics]
-        allowed_metrics = ['gait_rank1', 'gait_contrastive_loss', 'view_acc']
+        allowed_metrics = ['gait_rank1', 'gait_contrastive_loss']
         for metric in metrics:
             if metric not in allowed_metrics:
                 raise KeyError(f'metric {metric} is not supported')
 
-        view_scores = None
         if len(results) > 0 and isinstance(results[0], (tuple, list)):
             features = np.stack([self._to_feature(result[0]) for result in results])
-            if len(results[0]) > 1:
-                view_scores = np.stack([
-                    np.asarray(result[1], dtype=np.float32) for result in results
-                ])
         else:
             features = np.stack([self._to_feature(result) for result in results])
         labels = np.array([ann['label'] for ann in self.video_infos])
         roles = np.array([ann.get('gait_role', 'probe') for ann in self.video_infos])
-        view_labels = np.array([
-            self._view_to_index(ann.get('view', 0)) for ann in self.video_infos
-        ])
 
         gallery_mask = roles == 'gallery'
         probe_mask = roles == 'probe'
@@ -217,21 +211,26 @@ class CasiaBGaitDataset(BaseDataset):
             for label in sorted(set(gallery_labels)):
                 label_mask = gallery_labels == label
                 template = gallery_features[label_mask].mean(axis=0)
-                norm = np.linalg.norm(template)
-                if norm > 0:
-                    template = template / norm
                 gallery_templates.append(template)
                 gallery_template_labels.append(label)
             gallery_templates = np.stack(gallery_templates)
             gallery_template_labels = np.asarray(gallery_template_labels)
 
-            distances = 1 - np.matmul(probe_features, gallery_templates.T)
+            distances = self._pairwise_euclidean(probe_features, gallery_templates)
             pred_labels = gallery_template_labels[np.argmin(distances, axis=1)]
             correct = pred_labels == probe_labels
             eval_results['gait_rank1'] = float(correct.mean())
             print_log(f'\ngait_rank1\t{eval_results["gait_rank1"]:.4f}', logger=logger)
 
-            for condition in ('bg', 'cl', 'nm'):
+            probe_views = np.array([
+                self._view_to_index(ann.get('view', 0))
+                for ann in self.video_infos
+            ])[probe_mask]
+            condition_order = ('nm', 'bg', 'cl')
+            view_angles = tuple(range(0, 181, 18))
+            matrix = np.full((len(condition_order), len(view_angles)), np.nan, dtype=np.float32)
+
+            for row, condition in enumerate(condition_order):
                 condition_mask = probe_conditions == condition
                 if not np.any(condition_mask):
                     continue
@@ -239,6 +238,24 @@ class CasiaBGaitDataset(BaseDataset):
                 eval_results[key] = float(correct[condition_mask].mean())
                 print_log(f'\n{key}\t{eval_results[key]:.4f}', logger=logger)
 
+                for col, angle in enumerate(view_angles):
+                    view_idx = angle // 18
+                    mask = condition_mask & (probe_views == view_idx)
+                    if not np.any(mask):
+                        continue
+                    acc = float(correct[mask].mean())
+                    matrix[row, col] = acc
+                    eval_results[f'gait_rank1_{condition}_{angle:03d}'] = acc
+
+            header = ['cond/view'] + [f'{angle:03d}' for angle in view_angles]
+            lines = ['\t'.join(header)]
+            for row, condition in enumerate(condition_order):
+                values = []
+                for col in range(len(view_angles)):
+                    value = matrix[row, col]
+                    values.append('-' if np.isnan(value) else f'{value:.4f}')
+                lines.append('\t'.join([condition] + values))
+            print_log('\n' + '\n'.join(lines), logger=logger)
         if 'gait_contrastive_loss' in metrics:
             msg = '\nEvaluating gait_contrastive_loss ...' if logger is None else 'Evaluating gait_contrastive_loss ...'
             print_log(msg, logger=logger)
@@ -249,18 +266,6 @@ class CasiaBGaitDataset(BaseDataset):
             print_log(
                 f'\ngait_contrastive_loss\t{eval_results["gait_contrastive_loss"]:.4f}',
                 logger=logger)
-
-        if 'view_acc' in metrics:
-            if view_scores is None:
-                raise ValueError(
-                    'view_acc was requested, but model outputs did not include view scores. '
-                    'Enable `return_view_score=True` in test_cfg.'
-                )
-            msg = '\nEvaluating view_acc ...' if logger is None else 'Evaluating view_acc ...'
-            print_log(msg, logger=logger)
-            pred_view = np.argmax(view_scores, axis=1)
-            eval_results['view_acc'] = float((pred_view == view_labels).mean())
-            print_log(f'\nview_acc\t{eval_results["view_acc"]:.4f}', logger=logger)
 
         return eval_results
 

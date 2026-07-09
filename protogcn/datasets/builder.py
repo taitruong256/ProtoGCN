@@ -8,7 +8,7 @@ from mmcv.runner import get_dist_info
 from mmcv.utils import Registry, build_from_cfg, digit_version
 from torch.utils.data import DataLoader
 
-from .samplers import ClassSpecificDistributedSampler, DistributedSampler
+from .samplers import ClassSpecificDistributedSampler, DistributedSampler, RandomIdentitySampler
 
 if platform.system() != 'Windows':
     import resource
@@ -44,6 +44,7 @@ def build_dataloader(dataset,
                      drop_last=False,
                      pin_memory=True,
                      persistent_workers=False,
+                     sampler_cfg=None,
                      **kwargs):
     """Build PyTorch DataLoader.
 
@@ -75,7 +76,18 @@ def build_dataloader(dataset,
     """
     rank, world_size = get_dist_info()
 
-    if hasattr(dataset, 'class_prob') and dataset.class_prob is not None:
+    if sampler_cfg is not None:
+        sampler_type = sampler_cfg.get('type')
+        if sampler_type != 'RandomIdentitySampler':
+            raise ValueError(f'Unsupported sampler type: {sampler_type}')
+        sampler = RandomIdentitySampler(
+            dataset=dataset,
+            batch_size=videos_per_gpu,
+            num_instances=sampler_cfg['num_instances'],
+            num_replicas=world_size,
+            rank=rank,
+            seed=seed)
+    elif hasattr(dataset, 'class_prob') and dataset.class_prob is not None:
         sampler = ClassSpecificDistributedSampler(
             dataset,
             world_size,
