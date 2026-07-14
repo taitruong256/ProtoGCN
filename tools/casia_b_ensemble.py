@@ -13,14 +13,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from protogcn.smp import comb
 
 # Paths for CASIA-B predictions
-joint_path = '/home/HardDisk/Tai/ProtoGCN/work_dirs/casia_b/j_new/best_pred.pkl'
-bone_path = '/home/HardDisk/Tai/ProtoGCN/work_dirs/casia_b/b_new/best_pred.pkl'
-kbone_path = '/home/HardDisk/Tai/ProtoGCN/work_dirs/casia_b/k_new/best_pred.pkl'
-joint_motion_path = '/home/HardDisk/Tai/ProtoGCN/work_dirs/casia_b/jm_new/best_pred.pkl'
-bone_motion_path = '/home/HardDisk/Tai/ProtoGCN/work_dirs/casia_b/bm_new/best_pred.pkl'
-kbone_motion_path = '/home/HardDisk/Tai/ProtoGCN/work_dirs/casia_b/km_new/best_pred.pkl'
-angle_path = '/home/HardDisk/Tai/ProtoGCN/work_dirs/casia_b/a_new/best_pred.pkl'
-relative_path = '/home/HardDisk/Tai/ProtoGCN/work_dirs/casia_b/r_new/best_pred.pkl'
+joint_path = '/workspace/ProtoGCN/work_dirs/casia_b/j_new_full/best_pred.pkl'
+bone_path = '/workspace/ProtoGCN/work_dirs/casia_b/b_new_full/best_pred.pkl'
+kbone_path = '/workspace/ProtoGCN/work_dirs/casia_b/k_new_full/best_pred.pkl'
+joint_motion_path = '/workspace/ProtoGCN/work_dirs/casia_b/jm_new_full/best_pred.pkl'
+bone_motion_path = '/workspace/ProtoGCN/work_dirs/casia_b/bm_new_full/best_pred.pkl'
+kbone_motion_path = '/workspace/ProtoGCN/work_dirs/casia_b/km_new_full/best_pred.pkl'
+angle_path = '/workspace/ProtoGCN/work_dirs/casia_b/a_new_full/best_pred.pkl'
+# relative_path = '/workspace/ProtoGCN/work_dirs/casia_b/r_new_full/best_pred.pkl'
 
 
 def _seq_name_from_image_name(image_name):
