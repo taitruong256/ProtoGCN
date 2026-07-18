@@ -128,9 +128,9 @@ def parse_args():
         '--eval',
         type=str,
         nargs='+',
-        default=['top_k_accuracy', 'mean_class_accuracy'],
-        help='evaluation metrics, which depends on the dataset, e.g.,'
-        ' "top_k_accuracy", "mean_class_accuracy" for video dataset')
+        default=None,
+        help='override evaluation metrics from the config; if omitted, use '
+        'the config evaluation metrics (required for CASIA-B gait protocol)')
     parser.add_argument(
         '--tmpdir',
         help='tmp directory used for collecting results from multiple workers')

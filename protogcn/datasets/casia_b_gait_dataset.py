@@ -35,12 +35,14 @@ class CasiaBGaitDataset(BaseDataset):
                  gallery_sequences=('01', '02', '03', '04'),
                  probe_nm_sequences=('05', '06'),
                  probe_conditions=('bg', 'cl'),
+                 probe_bgcl_sequences=('01', '02'),
                  min_frames=1,
                  **kwargs):
         self.gallery_conditions = set(gallery_conditions)
         self.gallery_sequences = set(gallery_sequences)
         self.probe_conditions = set(probe_conditions)
         self.probe_nm_sequences = set(probe_nm_sequences)
+        self.probe_bgcl_sequences = set(probe_bgcl_sequences)
         self.min_frames = min_frames
         super().__init__(ann_file, pipeline, start_index=0, modality='Pose', **kwargs)
 
@@ -106,7 +108,8 @@ class CasiaBGaitDataset(BaseDataset):
             return 'gallery'
         if condition == 'nm' and sequence in self.probe_nm_sequences:
             return 'probe'
-        if condition in self.probe_conditions:
+        if (condition in self.probe_conditions
+                and sequence in self.probe_bgcl_sequences):
             return 'probe'
         return 'ignore'
 
@@ -162,6 +165,84 @@ class CasiaBGaitDataset(BaseDataset):
         loss = -(log_prob * pos_mask).sum(axis=1)[valid] / pos_count[valid]
         return float(loss.mean())
 
+    @staticmethod
+    def _fastposegait_rank1(features, labels, conditions, sequences, views, roles):
+        """CASIA-B Rank-1 protocol used by FastPoseGait.
+
+        Gallery samples are the individual ``nm-01`` through ``nm-04``
+        sequences, rather than an identity-level gallery template.  Rank-1 is
+        computed for every probe-view/gallery-view pair and then averaged
+        after removing the same-view diagonal.  This is the protocol in
+        ``FastPoseGait.evaluation.single_view_gallery_evaluation``.
+        """
+        gallery_mask = roles == 'gallery'
+        if not np.any(gallery_mask):
+            raise ValueError('CASIA-B gait evaluation requires gallery sequences.')
+
+        gallery_features = features[gallery_mask]
+        gallery_labels = labels[gallery_mask]
+        gallery_views = views[gallery_mask]
+        view_list = np.sort(np.unique(views))
+        if len(view_list) < 2:
+            raise ValueError('FastPoseGait CASIA-B evaluation requires at least two views.')
+
+        # FastPoseGait's standard CASIA-B split.  Keep the ordering used in
+        # its report so metrics can be compared side by side.
+        probe_sequences = {
+            'NM': ('nm', ('05', '06')),
+            'BG': ('bg', ('01', '02')),
+            'CL': ('cl', ('01', '02')),
+        }
+        results = OrderedDict()
+        for name, (condition, sequences_for_condition) in probe_sequences.items():
+            probe_mask = ((roles == 'probe') & (conditions == condition)
+                          & np.isin(sequences, sequences_for_condition))
+            if not np.any(probe_mask):
+                continue
+
+            matrix = np.full((len(view_list), len(view_list)), np.nan,
+                             dtype=np.float64)
+            for probe_idx, probe_view in enumerate(view_list):
+                q_mask = probe_mask & (views == probe_view)
+                if not np.any(q_mask):
+                    continue
+                query_features = features[q_mask]
+                query_labels = labels[q_mask]
+
+                for gallery_idx, gallery_view in enumerate(view_list):
+                    # FastPoseGait excludes all same-view probe/gallery pairs
+                    # through de_diag(), so do not evaluate the diagonal.
+                    if probe_view == gallery_view:
+                        continue
+                    g_mask = gallery_views == gallery_view
+                    if not np.any(g_mask):
+                        continue
+                    distances = np.linalg.norm(
+                        query_features[:, None, :] -
+                        gallery_features[g_mask][None, :, :], axis=-1)
+                    nearest_labels = gallery_labels[g_mask][
+                        np.argmin(distances, axis=1)]
+                    matrix[probe_idx, gallery_idx] = np.mean(
+                        nearest_labels == query_labels) * 100.0
+
+            off_diagonal = matrix[~np.eye(len(view_list), dtype=bool)]
+            valid = off_diagonal[~np.isnan(off_diagonal)]
+            if valid.size == 0:
+                raise ValueError(
+                    f'No valid cross-view gallery pairs for CASIA-B {name}.')
+            score = float(np.mean(valid))
+            # FastPoseGait returns percentages, not fractions.
+            results[f'gait_rank1_{name.lower()}'] = score
+            results[f'{name}@R1'] = score
+
+        if not results:
+            raise ValueError('No FastPoseGait CASIA-B probe sequences were found.')
+        results['gait_rank1'] = float(np.mean([
+            results[f'gait_rank1_{name.lower()}']
+            for name in probe_sequences if f'gait_rank1_{name.lower()}' in results
+        ]))
+        return results
+
     def evaluate(self,
                  results,
                  metrics='gait_rank1',
@@ -191,6 +272,8 @@ class CasiaBGaitDataset(BaseDataset):
             features = np.stack([self._to_feature(result) for result in results])
         labels = np.array([ann['label'] for ann in self.video_infos])
         roles = np.array([ann.get('gait_role', 'probe') for ann in self.video_infos])
+        conditions = np.array([ann.get('condition', '') for ann in self.video_infos])
+        sequences = np.array([str(ann.get('sequence', '')) for ann in self.video_infos])
         view_labels = np.array([
             self._view_to_index(ann.get('view', 0)) for ann in self.video_infos
         ])
@@ -206,38 +289,11 @@ class CasiaBGaitDataset(BaseDataset):
         if 'gait_rank1' in metrics:
             msg = '\nEvaluating gait_rank1 ...' if logger is None else 'Evaluating gait_rank1 ...'
             print_log(msg, logger=logger)
-            gallery_features = features[gallery_mask]
-            gallery_labels = labels[gallery_mask]
-            probe_features = features[probe_mask]
-            probe_labels = labels[probe_mask]
-            probe_conditions = np.array([ann.get('condition', '') for ann in self.video_infos])[probe_mask]
-
-            gallery_templates = []
-            gallery_template_labels = []
-            for label in sorted(set(gallery_labels)):
-                label_mask = gallery_labels == label
-                template = gallery_features[label_mask].mean(axis=0)
-                norm = np.linalg.norm(template)
-                if norm > 0:
-                    template = template / norm
-                gallery_templates.append(template)
-                gallery_template_labels.append(label)
-            gallery_templates = np.stack(gallery_templates)
-            gallery_template_labels = np.asarray(gallery_template_labels)
-
-            distances = 1 - np.matmul(probe_features, gallery_templates.T)
-            pred_labels = gallery_template_labels[np.argmin(distances, axis=1)]
-            correct = pred_labels == probe_labels
-            eval_results['gait_rank1'] = float(correct.mean())
-            print_log(f'\ngait_rank1\t{eval_results["gait_rank1"]:.4f}', logger=logger)
-
-            for condition in ('bg', 'cl', 'nm'):
-                condition_mask = probe_conditions == condition
-                if not np.any(condition_mask):
-                    continue
-                key = f'gait_rank1_{condition}'
-                eval_results[key] = float(correct[condition_mask].mean())
-                print_log(f'\n{key}\t{eval_results[key]:.4f}', logger=logger)
+            rank1_results = self._fastposegait_rank1(
+                features, labels, conditions, sequences, view_labels, roles)
+            eval_results.update(rank1_results)
+            for key, value in rank1_results.items():
+                print_log(f'\n{key}\t{value:.2f}%', logger=logger)
 
         if 'gait_contrastive_loss' in metrics:
             msg = '\nEvaluating gait_contrastive_loss ...' if logger is None else 'Evaluating gait_contrastive_loss ...'
