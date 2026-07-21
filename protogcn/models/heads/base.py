@@ -19,7 +19,8 @@ class BaseHead(nn.Module, metaclass=ABCMeta):
                  weight,
                  loss_cls=dict(type='CrossEntropyLoss', loss_weight=1.0),
                  multi_class=False,
-                 label_smooth_eps=0.0):
+                 label_smooth_eps=0.0,
+                 use_csc_loss=True):
         super().__init__()
         self.num_classes = num_classes
         self.in_channels = in_channels
@@ -27,13 +28,19 @@ class BaseHead(nn.Module, metaclass=ABCMeta):
         self.loss_cls = build_loss(loss_cls)
         self.multi_class = multi_class
         self.label_smooth_eps = label_smooth_eps
-        if joint_cfg == 'nturgb+d':     # 25*25=625
-            n_channel = 625
-        elif joint_cfg == 'coco':       # 17*17=289
-            n_channel = 289
-        elif joint_cfg == 'coco_new':   # 20*20=400
-            n_channel = 400
-        self.csc_loss = Class_Specific_Contrastive_Loss(num_classes, n_channel)
+        self.use_csc_loss = use_csc_loss
+        if self.use_csc_loss:
+            if joint_cfg == 'nturgb+d':     # 25*25=625
+                n_channel = 625
+            elif joint_cfg == 'coco':       # 17*17=289
+                n_channel = 289
+            elif joint_cfg == 'coco_new':   # 20*20=400
+                n_channel = 400
+            else:
+                raise ValueError(f'Unsupported joint_cfg for CSC loss: {joint_cfg}')
+            self.csc_loss = Class_Specific_Contrastive_Loss(num_classes, n_channel)
+        else:
+            self.csc_loss = None
         
     @abstractmethod
     def init_weights(self):
@@ -70,9 +77,9 @@ class BaseHead(nn.Module, metaclass=ABCMeta):
         ************
         """  
         loss_ce = self.loss_cls(cls_score, label, **kwargs)
-        loss_csc = self.csc_loss(get_graph, label.detach(), cls_score.detach())
-
         losses['loss_ce'] = loss_ce.mean()
-        losses['loss_csc'] = self.weight * loss_csc.mean()
+        if self.use_csc_loss:
+            loss_csc = self.csc_loss(get_graph, label.detach(), cls_score.detach())
+            losses['loss_csc'] = self.weight * loss_csc.mean()
 
         return losses

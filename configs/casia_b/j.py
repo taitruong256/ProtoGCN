@@ -14,9 +14,10 @@ model = dict(
         num_stages=4,
         inflate_stages=[3, 4],
         down_stages=[3, 4],
+        use_prn=False,
         tcn_ms_cfg=[(3, 1), (3, 2), (3, 3), (3, 4), ('max', 3), '1x1'],
         graph_cfg=dict(layout=graph, mode='random', num_filter=8, init_off=.04, init_std=.02)),
-    cls_head=dict(type='SimpleHead', joint_cfg=graph, num_classes=num_classes, in_channels=384, weight=0.2),
+    cls_head=dict(type='SimpleHead', joint_cfg=graph, num_classes=num_classes, in_channels=192, weight=0.2, use_csc_loss=False),
     view_loss_weight=1.0,
     test_cfg=dict(feat_ext=True, pool_opt='nmtv'))
 

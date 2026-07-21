@@ -103,6 +103,7 @@ class ProtoGCN(nn.Module):
                  down_stages=[5, 8],
                  data_bn_type='VC',
                  num_person=2,
+                 use_prn=True,
                  pretrained=None,
                  **kwargs):
         super().__init__()
@@ -134,6 +135,7 @@ class ProtoGCN(nn.Module):
         self.ch_ratio = ch_ratio
         self.inflate_stages = inflate_stages
         self.down_stages = down_stages
+        self.use_prn = use_prn
         modules = []
         if self.in_channels != self.base_channels:
             modules = [GCN_Block(in_channels, base_channels, A.clone(), 1, residual=False, **lw_kwargs[0])]
@@ -161,12 +163,13 @@ class ProtoGCN(nn.Module):
         norm = 'BN'
         norm_cfg = norm if isinstance(norm, dict) else dict(type=norm)
         
-        self.post = nn.Conv2d(out_channels, out_channels, 1)
-        self.bn = build_norm_layer(norm_cfg, out_channels)[1]
-        self.relu = nn.ReLU()
-        
-        dim = self.base_channels * 4
-        self.prn = Prototype_Reconstruction_Network(dim, num_prototype)
+        if self.use_prn:
+            self.post = nn.Conv2d(out_channels, out_channels, 1)
+            self.bn = build_norm_layer(norm_cfg, out_channels)[1]
+            self.relu = nn.ReLU()
+
+            dim = self.base_channels * 4
+            self.prn = Prototype_Reconstruction_Network(dim, num_prototype)
         
     def init_weights(self):
         if isinstance(self.pretrained, str):
@@ -204,22 +207,27 @@ class ProtoGCN(nn.Module):
         graph = graph.view(N, M, c_graph, V, V).mean(1).view(N, c_graph, V * V)
         logger.debug("ProtoGCN.forward: last_graph_pool=%s", _shape(graph))
         
-        the_graph_list = []
-        for i in range(N):
-            # V*V C
-            the_graph = graph[i].permute(1, 0)
-            # V*V C
-            the_graph = self.prn(the_graph)
-            # C V V
-            the_graph = the_graph.permute(1, 0).view(c_graph, V, V)
-            the_graph_list.append(the_graph)
-        
-        # N C V V
-        re_graph = torch.stack(the_graph_list, dim=0)
-        re_graph = self.post(re_graph)
-        reconstructed_graph = self.relu(self.bn(re_graph))
-        # N V*V
-        reconstructed_graph = reconstructed_graph.mean(1).view(N, -1)
+        if self.use_prn:
+            the_graph_list = []
+            for i in range(N):
+                # V*V C
+                the_graph = graph[i].permute(1, 0)
+                # V*V C
+                the_graph = self.prn(the_graph)
+                # C V V
+                the_graph = the_graph.permute(1, 0).view(c_graph, V, V)
+                the_graph_list.append(the_graph)
+
+            # N C V V
+            re_graph = torch.stack(the_graph_list, dim=0)
+            re_graph = self.post(re_graph)
+            reconstructed_graph = self.relu(self.bn(re_graph))
+            # N V*V
+            reconstructed_graph = reconstructed_graph.mean(1).view(N, -1)
+        else:
+            # Keep the graph output compatible with CSC loss without the PRN
+            # reconstruction branch.
+            reconstructed_graph = graph.mean(1).view(N, -1)
         logger.debug("ProtoGCN.forward: reconstructed_graph=%s", _shape(reconstructed_graph))
 
         if len(view_logits_list) > 0:
