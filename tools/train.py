@@ -14,7 +14,9 @@ from protogcn import __version__
 from protogcn.apis import init_random_seed, train_model
 from protogcn.datasets import build_dataset
 from protogcn.models import build_model
-from protogcn.utils import collect_env, get_root_logger, mc_off, mc_on, test_port
+from protogcn.utils import (
+    collect_env, get_root_logger, log_model_flops, log_model_parameters,
+    mc_off, mc_on, test_port)
 
 
 def parse_args():
@@ -117,6 +119,9 @@ def main():
     meta['work_dir'] = osp.basename(cfg.work_dir.rstrip('/\\'))
     
     model = build_model(cfg.model)
+    if rank == 0:
+        log_model_parameters(logger, model)
+        log_model_flops(logger, model, cfg, batch_size=16)
     if dv(torch.__version__) >= dv('2.0.0') and args.compile:
         model = torch.compile(model)
     datasets = [build_dataset(cfg.data.train)]

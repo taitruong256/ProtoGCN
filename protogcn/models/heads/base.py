@@ -69,13 +69,10 @@ class BaseHead(nn.Module, metaclass=ABCMeta):
         *** Loss ***
         ************
         """  
-        loss_cls_1 = self.loss_cls(cls_score, label, **kwargs)
-        loss_cls_2 = self.csc_loss(get_graph, label.detach(), cls_score.detach())        
-        loss_cls = loss_cls_1.mean() + self.weight * loss_cls_2.mean()
-        
-        if isinstance(loss_cls, dict):
-            losses.update(loss_cls)
-        else:
-            losses['loss_cls'] = loss_cls
+        loss_ce = self.loss_cls(cls_score, label, **kwargs)
+        loss_csc = self.csc_loss(get_graph, label.detach(), cls_score.detach())
+
+        losses['loss_ce'] = loss_ce.mean()
+        losses['loss_csc'] = self.weight * loss_csc.mean()
 
         return losses
