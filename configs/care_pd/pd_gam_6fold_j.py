@@ -14,13 +14,13 @@ model = dict(
         in_channels=3,
         num_prototype=300,
         gcn_use_view_graph=False,
-        base_channel=64, 
+        base_channels=64,  
         num_stages=4,
         inflate_stages=[3, 4], 
         down_stages=[3, 4],
         tcn_ms_cfg=[(3, 1), (3, 2), (3, 3), (3, 4), ('max', 3), '1x1'],
         graph_cfg=dict(layout=graph, mode='random', num_filter=8, init_off=.04, init_std=.02)),
-    cls_head=dict(type='SimpleHead', joint_cfg=graph, num_classes=num_classes, in_channels=384, weight=0.2),
+    cls_head=dict(type='SimpleHead', joint_cfg=graph, num_classes=num_classes, in_channels=256, weight=0.2),
     use_view_loss=False,
     test_cfg=dict(feat_ext=False, average_clips='prob'))
 
