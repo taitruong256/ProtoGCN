@@ -1,46 +1,51 @@
 graph = 'coco'
 num_classes = 74
-work_dir = f'./work_dirs/casia_b/fusion_new'
+work_dir = f'./work_dirs/casia_b/fusion_new_4stage_48channel'
 
 # Early fusion of the 6 default CASIA-B streams:
 # joint, bone, kbone, joint motion, bone motion, kbone motion.
-feats = ['j', 'b', 'k', 'jm', 'bm', 'km']
+feats = ['j', 'b', 'jm']
 
 model = dict(
     type='RecognizerGCN',
     backbone=dict(
         type='ProtoGCN',
-        in_channels=18,
-        num_prototype=300,
+        in_channels=9,
+        num_prototype=200,
         view_num=11,
+        base_channels=48,
+        num_stages=4,
+        inflate_stages=[3, 4],
+        down_stages=[3, 4],
+        use_prn=False,
         tcn_ms_cfg=[(3, 1), (3, 2), (3, 3), (3, 4), ('max', 3), '1x1'],
         graph_cfg=dict(layout=graph, mode='random', num_filter=8, init_off=.04, init_std=.02)),
-    cls_head=dict(type='SimpleHead', joint_cfg=graph, num_classes=num_classes, in_channels=384, weight=0.2),
+    cls_head=dict(type='SimpleHead', joint_cfg=graph, num_classes=num_classes, in_channels=192, weight=0.2, use_csc_loss=False),
     view_loss_weight=1.0,
     test_cfg=dict(feat_ext=True, pool_opt='nmtv'))
 
 dataset_type = 'CasiaBGaitDataset'
-train_ann_file = 'data/casia-b/casia-b_pose_train.csv'
+train_ann_file = 'data/casia-b/casia-b_pose_train_valid.csv'
 val_ann_file = 'data/casia-b/casia-b_pose_valid.csv'
 test_ann_file = 'data/casia-b/casia-b_pose_test.csv'
 train_pipeline = [
     dict(type='RandomRot', theta=0.2),
     dict(type='GenSkeFeat', dataset=graph, feats=feats),
-    dict(type='UniformSampleDecode', clip_len=100),
+    dict(type='UniformSampleDecode', clip_len=60),
     dict(type='FormatGCNInput', num_person=1),
     dict(type='Collect', keys=['keypoint', 'label'], meta_keys=['subject', 'condition', 'view', 'sequence', 'frame_dir']),
     dict(type='ToTensor', keys=['keypoint'])
 ]
 val_pipeline = [
     dict(type='GenSkeFeat', dataset=graph, feats=feats),
-    dict(type='UniformSampleDecode', clip_len=100, num_clips=1),
+    dict(type='UniformSampleDecode', clip_len=60, num_clips=1),
     dict(type='FormatGCNInput', num_person=1),
     dict(type='Collect', keys=['keypoint', 'label'], meta_keys=['subject', 'condition', 'view', 'sequence', 'frame_dir']),
     dict(type='ToTensor', keys=['keypoint'])
 ]
 test_pipeline = [
     dict(type='GenSkeFeat', dataset=graph, feats=feats),
-    dict(type='UniformSampleDecode', clip_len=100, num_clips=10),
+    dict(type='UniformSampleDecode', clip_len=60, num_clips=10),
     dict(type='FormatGCNInput', num_person=1),
     dict(type='Collect', keys=['keypoint', 'label'], meta_keys=['subject', 'condition', 'view', 'sequence', 'frame_dir']),
     dict(type='ToTensor', keys=['keypoint'])

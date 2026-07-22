@@ -137,9 +137,9 @@ class CasiaBGaitDataset(BaseDataset):
 
     @staticmethod
     def _to_feature(result):
-        feat = np.asarray(result, dtype=np.float32)
-        feat = feat.reshape(-1, feat.shape[-3]) if feat.ndim >= 3 else feat.reshape(1, -1)
-        feat = feat.mean(axis=0)
+        # Match the ensemble evaluator: flatten one prediction and then
+        # apply L2 normalization before cosine-distance matching.
+        feat = np.asarray(result, dtype=np.float32).reshape(-1)
         norm = np.linalg.norm(feat)
         if norm > 0:
             feat = feat / norm
@@ -167,80 +167,52 @@ class CasiaBGaitDataset(BaseDataset):
 
     @staticmethod
     def _fastposegait_rank1(features, labels, conditions, sequences, views, roles):
-        """CASIA-B Rank-1 protocol used by FastPoseGait.
+        """Evaluate Rank-1 with the same protocol as the ensemble script.
 
-        Gallery samples are the individual ``nm-01`` through ``nm-04``
-        sequences, rather than an identity-level gallery template.  Rank-1 is
-        computed for every probe-view/gallery-view pair and then averaged
-        after removing the same-view diagonal.  This is the protocol in
-        ``FastPoseGait.evaluation.single_view_gallery_evaluation``.
+        Gallery sequences are averaged into one normalized template per
+        identity. Probe features are matched to those templates using cosine
+        distance (``1 - cosine_similarity``), exactly as in
+        ``tools/casia_b_ensemble.py``.
         """
         gallery_mask = roles == 'gallery'
+        probe_mask = roles == 'probe'
         if not np.any(gallery_mask):
             raise ValueError('CASIA-B gait evaluation requires gallery sequences.')
 
+        if not np.any(probe_mask):
+            raise ValueError('CASIA-B gait evaluation requires probe sequences.')
+
         gallery_features = features[gallery_mask]
         gallery_labels = labels[gallery_mask]
-        gallery_views = views[gallery_mask]
-        view_list = np.sort(np.unique(views))
-        if len(view_list) < 2:
-            raise ValueError('FastPoseGait CASIA-B evaluation requires at least two views.')
+        probe_features = features[probe_mask]
+        probe_labels = labels[probe_mask]
+        probe_conditions = conditions[probe_mask]
 
-        # FastPoseGait's standard CASIA-B split.  Keep the ordering used in
-        # its report so metrics can be compared side by side.
-        probe_sequences = {
-            'NM': ('nm', ('05', '06')),
-            'BG': ('bg', ('01', '02')),
-            'CL': ('cl', ('01', '02')),
-        }
+        gallery_templates = []
+        gallery_template_labels = []
+        for label in sorted(set(gallery_labels.tolist())):
+            label_mask = gallery_labels == label
+            template = gallery_features[label_mask].mean(axis=0)
+            norm = np.linalg.norm(template)
+            if norm > 0:
+                template = template / norm
+            gallery_templates.append(template)
+            gallery_template_labels.append(label)
+
+        gallery_templates = np.stack(gallery_templates, axis=0)
+        gallery_template_labels = np.asarray(gallery_template_labels)
+
+        distances = 1 - np.matmul(probe_features, gallery_templates.T)
+        pred_labels = gallery_template_labels[np.argmin(distances, axis=1)]
+        correct = pred_labels == probe_labels
+
         results = OrderedDict()
-        for name, (condition, sequences_for_condition) in probe_sequences.items():
-            probe_mask = ((roles == 'probe') & (conditions == condition)
-                          & np.isin(sequences, sequences_for_condition))
-            if not np.any(probe_mask):
-                continue
-
-            matrix = np.full((len(view_list), len(view_list)), np.nan,
-                             dtype=np.float64)
-            for probe_idx, probe_view in enumerate(view_list):
-                q_mask = probe_mask & (views == probe_view)
-                if not np.any(q_mask):
-                    continue
-                query_features = features[q_mask]
-                query_labels = labels[q_mask]
-
-                for gallery_idx, gallery_view in enumerate(view_list):
-                    # FastPoseGait excludes all same-view probe/gallery pairs
-                    # through de_diag(), so do not evaluate the diagonal.
-                    if probe_view == gallery_view:
-                        continue
-                    g_mask = gallery_views == gallery_view
-                    if not np.any(g_mask):
-                        continue
-                    distances = np.linalg.norm(
-                        query_features[:, None, :] -
-                        gallery_features[g_mask][None, :, :], axis=-1)
-                    nearest_labels = gallery_labels[g_mask][
-                        np.argmin(distances, axis=1)]
-                    matrix[probe_idx, gallery_idx] = np.mean(
-                        nearest_labels == query_labels) * 100.0
-
-            off_diagonal = matrix[~np.eye(len(view_list), dtype=bool)]
-            valid = off_diagonal[~np.isnan(off_diagonal)]
-            if valid.size == 0:
-                raise ValueError(
-                    f'No valid cross-view gallery pairs for CASIA-B {name}.')
-            score = float(np.mean(valid))
-            # FastPoseGait returns percentages, not fractions.
-            results[f'gait_rank1_{name.lower()}'] = score
-            results[f'{name}@R1'] = score
-
-        if not results:
-            raise ValueError('No FastPoseGait CASIA-B probe sequences were found.')
-        results['gait_rank1'] = float(np.mean([
-            results[f'gait_rank1_{name.lower()}']
-            for name in probe_sequences if f'gait_rank1_{name.lower()}' in results
-        ]))
+        results['gait_rank1'] = float(correct.mean())
+        for condition in ('bg', 'cl', 'nm'):
+            condition_mask = probe_conditions == condition
+            if np.any(condition_mask):
+                results[f'gait_rank1_{condition}'] = float(
+                    correct[condition_mask].mean())
         return results
 
     def evaluate(self,
@@ -293,7 +265,7 @@ class CasiaBGaitDataset(BaseDataset):
                 features, labels, conditions, sequences, view_labels, roles)
             eval_results.update(rank1_results)
             for key, value in rank1_results.items():
-                print_log(f'\n{key}\t{value:.2f}%', logger=logger)
+                print_log(f'\n{key}\t{value:.4f}', logger=logger)
 
         if 'gait_contrastive_loss' in metrics:
             msg = '\nEvaluating gait_contrastive_loss ...' if logger is None else 'Evaluating gait_contrastive_loss ...'

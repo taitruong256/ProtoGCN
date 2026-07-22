@@ -1,7 +1,7 @@
 modality = 'j'
 graph = 'coco'
 num_classes = 74 
-work_dir = f'./work_dirs/casia_b/j_new_4stage_48channel'
+work_dir = f'./work_dirs/casia_b/j_new_full_6stage_64channel'
 
 model = dict(
     type='RecognizerGCN',
@@ -9,15 +9,14 @@ model = dict(
         type='ProtoGCN',
         in_channels=3,
         num_prototype=200,
-        view_num=11,
         base_channels=48,
+        view_num=11,
         num_stages=4,
         inflate_stages=[3, 4],
         down_stages=[3, 4],
-        use_prn=False,
         tcn_ms_cfg=[(3, 1), (3, 2), (3, 3), (3, 4), ('max', 3), '1x1'],
         graph_cfg=dict(layout=graph, mode='random', num_filter=8, init_off=.04, init_std=.02)),
-    cls_head=dict(type='SimpleHead', joint_cfg=graph, num_classes=num_classes, in_channels=192, weight=0.2, use_csc_loss=False),
+    cls_head=dict(type='SimpleHead', joint_cfg=graph, num_classes=num_classes, in_channels=192, weight=0.2),
     view_loss_weight=1.0,
     test_cfg=dict(feat_ext=True, pool_opt='nmtv'))
 
@@ -60,7 +59,7 @@ data = dict(
 optimizer = dict(type='SGD', lr=0.025, momentum=0.9, weight_decay=0.0005, nesterov=True)
 optimizer_config = dict(grad_clip=None)
 lr_config = dict(policy='CosineAnnealing', min_lr=0, by_epoch=False)
-total_epochs = 5
+total_epochs = 200
 checkpoint_config = dict(interval=1, max_keep_ckpts=1, save_last=True)
 evaluation = dict(
     interval=1,
