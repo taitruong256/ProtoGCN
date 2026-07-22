@@ -128,9 +128,12 @@ def log_model_flops(logger, model, cfg, batch_size=16):
         model.train(was_training)
 
     logger.info(
-        'FLOPs: batch_size=%d, input_shape=%s, total=%.4f GFLOPs, average=%.4f GFLOPs/sample',
+        'FLOPs: batch_size=%d, input_shape=%s, total=%d FLOPs (%.9f GFLOPs), average=%d/%d FLOPs/sample (%.9f GFLOPs/sample)',
         batch_size,
         tuple(dummy_input.shape),
+        int(flops),
         flops / 1e9,
+        int(flops),
+        batch_size,
         flops / batch_size / 1e9,
     )

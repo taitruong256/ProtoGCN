@@ -163,7 +163,8 @@ def fnp(model, input=None):
     if input is not None:
         flops = FlopCountAnalysis(model, input).total()
         print("=" * 50)
-        print('FLOPs: {:.4f} G'.format(flops / 1024 / 1024 / 1024))
+        print('FLOPs: {:d} FLOPs ({:.9f} GFLOPs)'.format(
+            int(flops), flops / 1e9))
         print("=" * 50)
         return params, flops
     return params, None
