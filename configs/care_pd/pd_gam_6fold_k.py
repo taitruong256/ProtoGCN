@@ -14,6 +14,10 @@ model = dict(
         in_channels=3,
         num_prototype=300,
         gcn_use_view_graph=False,
+        base_channel=64, 
+        num_stages=4,
+        inflate_stages=[3, 4], 
+        down_stages=[3, 4],
         tcn_ms_cfg=[(3, 1), (3, 2), (3, 3), (3, 4), ('max', 3), '1x1'],
         graph_cfg=dict(layout=graph, mode='random', num_filter=8, init_off=.04, init_std=.02)),
     cls_head=dict(type='SimpleHead', joint_cfg=graph, num_classes=num_classes, in_channels=384, weight=0.2),
@@ -77,10 +81,10 @@ data = dict(
 optimizer = dict(type='SGD', lr=0.025, momentum=0.9, weight_decay=0.0005, nesterov=True)
 optimizer_config = dict(grad_clip=None)
 lr_config = dict(policy='CosineAnnealing', min_lr=0, by_epoch=False)
-total_epochs = 200 
-checkpoint_config = dict(interval=1, max_keep_ckpts=1, save_last=True)
+total_epochs = 150
+checkpoint_config = dict(interval=10, max_keep_ckpts=1, save_last=True)
 evaluation = dict(
-    interval=1,
+    interval=10,
     metrics=['accuracy', 'f1_score', 'precision', 'recall'],
     save_best='f1_score',
     rule='greater')

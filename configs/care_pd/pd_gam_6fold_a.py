@@ -1,17 +1,17 @@
 import os
 
-modality = 'j'
+modality = 'a'
 graph = 'smpl_24'
 num_classes = 4
 
 fold_id = int(os.environ.get('CARE_PD_FOLD', 1))
-work_dir = f'./work_dirs/care_pd/pd_gam/fold_{fold_id}'
+work_dir = f'./work_dirs/care_pd/pd_gam_a/fold_{fold_id}'
 
 model = dict(
     type='RecognizerGCN',
     backbone=dict(
         type='ProtoGCN',
-        in_channels=3,
+        in_channels=1,
         num_prototype=300,
         gcn_use_view_graph=False,
         base_channel=64, 
@@ -53,7 +53,7 @@ test_pipeline = [
 ]
 
 data = dict(
-    videos_per_gpu=8,
+    videos_per_gpu=16,
     workers_per_gpu=4,
     val_dataloader=dict(videos_per_gpu=1),
     test_dataloader=dict(videos_per_gpu=1),
@@ -78,10 +78,10 @@ data = dict(
         pipeline=test_pipeline,
         test_mode=True))
 
-optimizer = dict(type='SGD', lr=0.0125, momentum=0.9, weight_decay=0.0005, nesterov=True)
+optimizer = dict(type='SGD', lr=0.025, momentum=0.9, weight_decay=0.0005, nesterov=True)
 optimizer_config = dict(grad_clip=None)
 lr_config = dict(policy='CosineAnnealing', min_lr=0, by_epoch=False)
-total_epochs = 150
+total_epochs = 150 
 checkpoint_config = dict(interval=10, max_keep_ckpts=1, save_last=True)
 evaluation = dict(
     interval=10,
