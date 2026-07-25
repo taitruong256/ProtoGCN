@@ -655,6 +655,39 @@ class JointToAngle:
                 (13, 12),
                 (10, 9),
             ]
+        elif self.dataset == 'smpl_24':
+            # SMPL-24 joint order used by utils/graph.py and PD_GaM_utils.py:
+            # 0 pelvis, 1/2 hips, 3 spine1, 4/5 knees, 6 spine2,
+            # 7/8 ankles, 9 spine3, 10/11 feet, 12 neck, 13/14 collars,
+            # 15 head, 16/17 shoulders, 18/19 elbows, 20/21 wrists and
+            # 22/23 hands.  Keep one angle descriptor per joint so that the
+            # output has the same V=24 layout as the graph input.
+            self.angle_list = [
+                (0, 1, 2),
+                (1, 0, 4),
+                (2, 0, 5),
+                (3, 0, 6),
+                (4, 1, 7),
+                (5, 2, 8),
+                (6, 3, 9),
+                (7, 4, 10),
+                (8, 5, 11),
+                (9, 6, 12),
+                (10, 7),
+                (11, 8),
+                (12, 9, 15),
+                (13, 9, 16),
+                (14, 9, 17),
+                (15, 12),
+                (16, 13, 18),
+                (17, 14, 19),
+                (18, 16, 20),
+                (19, 17, 21),
+                (20, 18, 22),
+                (21, 19, 23),
+                (22, 20),
+                (23, 21),
+            ]
         else:
             raise ValueError(
                 f'The dataset type {self.dataset} is not supported for angle descriptors'
