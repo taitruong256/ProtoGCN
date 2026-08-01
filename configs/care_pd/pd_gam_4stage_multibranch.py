@@ -4,7 +4,9 @@ import os
 graph = 'smpl_24'
 num_classes = 4
 fold_id = int(os.environ.get('CARE_PD_FOLD', 1))
-work_dir = f'./work_dirs/care_pd/pd_gam_4stage_multibranch/fold_{fold_id}'
+# Keep this separate from checkpoints created by the former learnable-fusion
+# architecture; tools/train.py auto-resumes from work_dir/latest.pth.
+work_dir = f'./work_dirs/care_pd/pd_gam_4branch_ensemble/fold_{fold_id}'
 
 
 def make_backbone(in_channels):
@@ -36,7 +38,8 @@ model = dict(
         joint_cfg=graph,
         num_classes=num_classes,
         branch_channels=[256, 256, 256, 256],
-        fusion_channels=256,
+        branch_names=['joint', 'joint_motion', 'angle', 'bone'],
+        ensemble_weights=[1, 1, 1, 1],
         weight=0.2),
     test_cfg=dict(average_clips='prob'))
 
@@ -100,4 +103,3 @@ evaluation = dict(
     metrics=['accuracy', 'f1_score', 'precision', 'recall'],
     save_best='f1_score', rule='greater')
 log_config = dict(interval=50, hooks=[dict(type='TextLoggerHook')])
-

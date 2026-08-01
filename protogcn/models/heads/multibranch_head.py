@@ -2,9 +2,8 @@ import logging
 
 import torch
 import torch.nn as nn
-from mmcv.cnn import normal_init
 
-from .base import BaseHead
+from .simple_head import SimpleHead
 from ..builder import HEADS
 
 
@@ -12,64 +11,98 @@ logger = logging.getLogger(__name__)
 
 
 @HEADS.register_module()
-class MultiBranchHead(BaseHead):
-    """Fuse embeddings from multiple skeleton branches before classification.
+class MultiBranchHead(nn.Module):
+    """Independent classifiers for multiple skeleton feature branches.
 
-    Each branch returns ``N, M, C, T, V`` features. The features are pooled
-    independently, concatenated, projected by ``fusion_fc`` and classified.
-    The first branch graph is used by the existing class-specific contrastive
-    loss, preserving the loss used by ``SimpleHead``.
+    There is deliberately no learnable fusion layer.  Every branch owns its
+    classifier and loss; their probabilities are averaged only for
+    validation/test prediction.
     """
 
     def __init__(self,
                  joint_cfg,
                  num_classes,
                  branch_channels=256,
-                 fusion_channels=256,
+                 branch_names=None,
+                 ensemble_weights=None,
                  weight=0.2,
                  loss_cls=dict(type='CrossEntropyLoss', loss_weight=1.0),
                  dropout=0.0,
                  init_std=0.01,
                  **kwargs):
-        super().__init__(joint_cfg, num_classes, fusion_channels, weight,
-                         loss_cls, **kwargs)
+        super().__init__()
         if isinstance(branch_channels, int):
             branch_channels = [branch_channels]
         self.branch_channels = list(branch_channels)
-        self.fusion_channels = fusion_channels
-        self.init_std = init_std
-        self.dropout = nn.Dropout(dropout) if dropout else None
-        self.fusion_fc = nn.Linear(sum(self.branch_channels), fusion_channels)
-        self.fc_cls = nn.Linear(fusion_channels, num_classes)
+        self.branch_names = list(branch_names or [
+            f'branch_{index}' for index in range(len(self.branch_channels))
+        ])
+        if len(self.branch_names) != len(self.branch_channels):
+            raise ValueError('branch_names and branch_channels must have equal length')
 
-    @staticmethod
-    def _pool_branch(x):
-        if x.dim() != 5:
+        if ensemble_weights is None:
+            ensemble_weights = [1.0] * len(self.branch_channels)
+        if len(ensemble_weights) != len(self.branch_channels):
             raise ValueError(
-                f'MultiBranchHead expects N,M,C,T,V branch features, got {tuple(x.shape)}')
-        n, m, c, t, v = x.shape
-        x = x.reshape(n * m, c, t, v).mean(dim=(2, 3))
-        return x.reshape(n, m, c).mean(dim=1)
+                'ensemble_weights and branch_channels must have equal length')
+        ensemble_weights = torch.tensor(ensemble_weights, dtype=torch.float32)
+        if torch.any(ensemble_weights < 0) or ensemble_weights.sum() <= 0:
+            raise ValueError('ensemble_weights must be non-negative with a positive sum')
+        self.register_buffer(
+            'ensemble_weights', ensemble_weights / ensemble_weights.sum())
+
+        self.heads = nn.ModuleList([
+            SimpleHead(
+                joint_cfg=joint_cfg,
+                num_classes=num_classes,
+                in_channels=in_channels,
+                weight=weight,
+                loss_cls=loss_cls.copy(),
+                dropout=dropout,
+                init_std=init_std,
+                **kwargs)
+            for in_channels in self.branch_channels
+        ])
+        self.num_classes = num_classes
 
     def init_weights(self):
-        normal_init(self.fusion_fc, std=self.init_std)
-        normal_init(self.fc_cls, std=self.init_std)
+        for head in self.heads:
+            head.init_weights()
 
     def forward(self, branch_features):
         if not isinstance(branch_features, (list, tuple)):
             raise TypeError('MultiBranchHead expects a list of branch features')
-        if len(branch_features) != len(self.branch_channels):
+        if len(branch_features) != len(self.heads):
             raise ValueError(
-                f'Expected {len(self.branch_channels)} branches, got {len(branch_features)}')
+                f'Expected {len(self.heads)} branches, got {len(branch_features)}')
+        return [head(feature) for head, feature in zip(self.heads, branch_features)]
 
-        pooled = [self._pool_branch(feature) for feature in branch_features]
-        for feature, expected in zip(pooled, self.branch_channels):
-            if feature.shape[1] != expected:
-                raise ValueError(
-                    f'Branch embedding has {feature.shape[1]} channels, expected {expected}')
-        fused = self.fusion_fc(torch.cat(pooled, dim=1))
-        fused = torch.relu(fused)
-        if self.dropout is not None:
-            fused = self.dropout(fused)
-        return self.fc_cls(fused)
+    def loss(self, branch_scores, branch_graphs, label, **kwargs):
+        if len(branch_scores) != len(self.heads):
+            raise ValueError('The number of branch scores does not match the heads')
+        if len(branch_graphs) != len(self.heads):
+            raise ValueError('The number of branch graphs does not match the heads')
 
+        losses = {}
+        num_branches = len(self.heads)
+        for name, head, score, graph in zip(
+                self.branch_names, self.heads, branch_scores, branch_graphs):
+            branch_losses = head.loss(score, graph, label, **kwargs)
+            for key, value in branch_losses.items():
+                # BaseRecognizer sums keys containing "loss". Dividing each
+                # branch loss keeps the total at the mean of four losses.
+                if 'loss' in key:
+                    value = value / num_branches
+                losses[f'{name}_{key}'] = value
+        return losses
+
+    def ensemble(self, branch_probabilities):
+        """Average already-normalized class probabilities across branches."""
+        if len(branch_probabilities) != len(self.heads):
+            raise ValueError(
+                f'Expected {len(self.heads)} branch predictions, '
+                f'got {len(branch_probabilities)}')
+        stacked = torch.stack(branch_probabilities, dim=0)
+        weights = self.ensemble_weights.to(
+            device=stacked.device, dtype=stacked.dtype)
+        return (stacked * weights[:, None, None]).sum(dim=0)

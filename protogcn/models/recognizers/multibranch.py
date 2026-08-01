@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 @builder.RECOGNIZERS.register_module()
 class MultiBranchRecognizerGCN(BaseRecognizer):
-    """Train several ProtoGCN feature branches jointly and fuse them by FC.
+    """Run independent ProtoGCN branches in one model and ensemble outputs.
 
     Input channels must be ordered exactly as ``branch_channels``. For the
     CARE-PD four-stream model this is ``[3, 3, 1, 3]`` for joint, joint
@@ -86,19 +86,23 @@ class MultiBranchRecognizerGCN(BaseRecognizer):
                 f'Training expects one clip, got {keypoint.shape[1]} clips')
         keypoint = keypoint[:, 0]
         features, graphs = self._forward_branches(keypoint)
-        cls_score = self.cls_head(features)
+        branch_scores = self.cls_head(features)
         gt_label = label.squeeze(-1)
-        return self.cls_head.loss(cls_score, graphs[0], gt_label)
+        return self.cls_head.loss(branch_scores, graphs, gt_label)
 
     def forward_test(self, keypoint, **kwargs):
         bs, nc = keypoint.shape[:2]
         keypoint = keypoint.reshape((bs * nc,) + keypoint.shape[2:])
         features, _ = self._forward_branches(keypoint)
-        cls_score = self.cls_head(features)
-        cls_score = cls_score.reshape(bs, nc, cls_score.shape[-1])
+        branch_scores = self.cls_head(features)
         if 'average_clips' not in self.test_cfg:
             self.test_cfg['average_clips'] = 'prob'
-        return self.average_clip(cls_score).data.cpu().numpy()
+        branch_probabilities = []
+        for score in branch_scores:
+            score = score.reshape(bs, nc, score.shape[-1])
+            branch_probabilities.append(self.average_clip(score))
+        ensemble_probability = self.cls_head.ensemble(branch_probabilities)
+        return ensemble_probability.data.cpu().numpy()
 
     def forward(self, keypoint, label=None, return_loss=True, **kwargs):
         if return_loss:
@@ -106,4 +110,3 @@ class MultiBranchRecognizerGCN(BaseRecognizer):
                 raise ValueError('Label should not be None.')
             return self.forward_train(keypoint, label, **kwargs)
         return self.forward_test(keypoint, **kwargs)
-
