@@ -89,11 +89,23 @@ class MultiBranchHead(nn.Module):
                 self.branch_names, self.heads, branch_scores, branch_graphs):
             branch_losses = head.loss(score, graph, label, **kwargs)
             for key, value in branch_losses.items():
+                # CARE-PD has four classes; top-5 is neither meaningful nor
+                # useful in the multibranch training log.
+                if key == 'top5_acc':
+                    continue
                 # BaseRecognizer sums keys containing "loss". Dividing each
                 # branch loss keeps the total at the mean of four losses.
                 if 'loss' in key:
                     value = value / num_branches
                 losses[f'{name}_{key}'] = value
+
+        branch_probabilities = [
+            torch.softmax(score, dim=-1) for score in branch_scores
+        ]
+        ensemble_probability = self.ensemble(branch_probabilities)
+        target = label.reshape(-1).long()
+        losses['ensemble_top1_acc'] = (
+            ensemble_probability.argmax(dim=-1) == target).float().mean()
         return losses
 
     def ensemble(self, branch_probabilities):

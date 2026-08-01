@@ -97,9 +97,9 @@ optimizer = dict(type='SGD', lr=0.025, momentum=0.9,
 optimizer_config = dict(grad_clip=None)
 lr_config = dict(policy='CosineAnnealing', min_lr=0, by_epoch=False)
 total_epochs = 150
-checkpoint_config = dict(interval=10, max_keep_ckpts=1, save_last=True)
+checkpoint_config = dict(interval=1, max_keep_ckpts=1, save_last=True)
 evaluation = dict(
-    interval=10,
+    interval=1,
     metrics=['accuracy', 'f1_score', 'precision', 'recall'],
     save_best='f1_score', rule='greater')
-log_config = dict(interval=50, hooks=[dict(type='TextLoggerHook')])
+log_config = dict(interval=1, hooks=[dict(type='TextLoggerHook')])
